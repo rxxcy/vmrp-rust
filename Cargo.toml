@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "apps/vmrp-windows",
+  "crates/vmrp-core",
+  "crates/vmrp-cpu",
+  "crates/vmrp-abi",
+  "crates/vmrp-platform",
+]
+resolver = "2"

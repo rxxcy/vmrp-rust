@@ -1,0 +1,14 @@
+[package]
+name = "vmrp-platform"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vmrp-core = { path = "../vmrp-core" }
+vmrp-cpu = { path = "../vmrp-cpu" }
+
+[dev-dependencies]
+vmrp-abi = { path = "../vmrp-abi" }
