@@ -54,3 +54,8 @@ Current implementation is still a staged compatibility build:
 2. Complete high-frequency DSM APIs (network/audio/ui paths).
 3. Add fuller runtime event loop integration.
 
+## Reference
+
+This implementation is developed with reference to:
+
+- https://github.com/vmrp/vmrp

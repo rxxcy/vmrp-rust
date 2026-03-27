@@ -54,3 +54,8 @@ cargo run -p vmrp-windows --manifest-path D:\opt\rust\vmrp-rust\Cargo.toml -- [p
 2. 完成高频 DSM API（网络/音频/UI 路径）。
 3. 补全更完整的运行时事件循环集成。
 
+## 参考
+
+本实现参考了以下项目：
+
+- https://github.com/vmrp/vmrp
