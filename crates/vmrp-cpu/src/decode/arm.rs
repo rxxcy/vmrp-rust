@@ -9,6 +9,8 @@ const BX_VALUE: u32 = 0x012F_FF10;
 const BLX_VALUE: u32 = 0x012F_FF30;
 const MULTIPLY_LONG_MASK: u32 = 0x0F80_00F0;
 const MULTIPLY_LONG_VALUE: u32 = 0x0080_0090;
+const BLX_IMMEDIATE_MASK: u32 = 0xFE00_0000;
+const BLX_IMMEDIATE_VALUE: u32 = 0xFA00_0000;
 
 pub fn decode(opcode: u32) -> DecodedInstruction {
     if opcode & BX_MASK == BX_VALUE {
@@ -29,6 +31,9 @@ pub fn decode(opcode: u32) -> DecodedInstruction {
         return decode_multiply_long(opcode);
     }
 
+    if opcode & BLX_IMMEDIATE_MASK == BLX_IMMEDIATE_VALUE {
+        return decode_blx_immediate(opcode);
+    }
     match opcode & (0b111 << 25) {
         BLOCK_TRANSFER_TAG => decode_block_transfer(opcode),
         DATA_PROCESSING_IMMEDIATE_TAG => decode_data_processing_immediate(opcode),
@@ -148,4 +153,13 @@ fn decode_branch(opcode: u32) -> DecodedInstruction {
         link,
         offset,
     }
+}
+
+fn decode_blx_immediate(opcode: u32) -> DecodedInstruction {
+    let h = ((opcode >> 24) & 1) as u32;
+    let imm24 = opcode & 0x00FF_FFFF;
+    let raw = ((imm24 << 2) | (h << 1)) as i32;
+    let offset = (raw << 6) >> 6;
+
+    DecodedInstruction::BranchLinkExchangeImmediate { offset }
 }

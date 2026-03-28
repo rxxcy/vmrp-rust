@@ -96,3 +96,54 @@ fn unknown_arm_opcode_is_skipped_when_condition_fails() {
 
     assert_eq!(cpu.regs().pc(), 0x80004);
 }
+
+#[test]
+fn arm_block_transfer_load_pc_switches_to_thumb_when_lsb_set() {
+    let mut cpu = new_arm_cpu(0xE8BD_8008);
+    cpu.regs_mut().set_sp(0x80080);
+    cpu.memory_mut().write32(GuestAddr::new(0x80080), 0x1111_2222).unwrap();
+    cpu.memory_mut().write32(GuestAddr::new(0x80084), 0x80021).unwrap();
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().pc(), 0x80020);
+    assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Thumb);
+}
+
+#[test]
+fn arm_block_transfer_load_pc_aligns_to_word_boundary() {
+    let mut cpu = new_arm_cpu(0xE8BD_8008);
+    cpu.regs_mut().set_sp(0x80080);
+    cpu.memory_mut().write32(GuestAddr::new(0x80080), 0x1111_2222).unwrap();
+    cpu.memory_mut().write32(GuestAddr::new(0x80084), 0x80022).unwrap();
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(3), 0x1111_2222);
+    assert_eq!(cpu.regs().pc(), 0x80020);
+}
+
+#[test]
+fn bx_register_aligns_arm_target_to_word_boundary() {
+    let mut cpu = new_arm_cpu(0xE12F_FF12);
+    cpu.regs_mut().set_reg(2, 0x80022);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().pc(), 0x80020);
+    assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Arm);
+}
+
+#[test]
+fn blx_immediate_switches_to_thumb_and_branches() {
+    let mut cpu = new_arm_cpu(0xFA00_0001);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().lr(), 0x80004);
+    assert_eq!(cpu.regs().pc(), 0x8000C);
+    assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Thumb);
+}
+
+
+

@@ -1,5 +1,5 @@
 use crate::cpu::CpuError;
-use crate::decode::{DataProcessingOp, DecodedInstruction, RegisterShift};
+use crate::decode::{Condition, DataProcessingOp, DecodedInstruction, RegisterShift, ThumbAluOp, ThumbHiOp, ThumbOperand};
 use crate::trace::{RegisterWrite, StepTrace};
 use crate::{Cpsr, CpuRegs, ExecutionMode, MemoryBus};
 use vmrp_core::GuestAddr;
@@ -19,7 +19,9 @@ pub fn execute_instruction<B: MemoryBus>(
 ) -> Result<StepResult, CpuError> {
     let mut register_writes = Vec::new();
 
-    if mode == ExecutionMode::Arm {
+    if mode == ExecutionMode::Arm
+        && !matches!(instruction, DecodedInstruction::BranchLinkExchangeImmediate { .. })
+    {
         let cond = ((opcode >> 28) & 0xF) as u8;
         if !arm_condition_passed(regs.cpsr(), cond) {
             let next_pc = pc.wrapping_add(4);
@@ -71,15 +73,28 @@ pub fn execute_instruction<B: MemoryBus>(
                 let addr = GuestAddr::new(start.wrapping_add((slot as u32) * 4));
                 if load {
                     let value = memory.read32(addr)?;
-                    if *index == 15 {
-                        regs.set_pc(value);
+                    let loaded_value = if *index == 15 {
+                        let next_mode = if value & 1 != 0 {
+                            ExecutionMode::Thumb
+                        } else {
+                            ExecutionMode::Arm
+                        };
+                        let next_pc = if next_mode == ExecutionMode::Thumb {
+                            value & !1
+                        } else {
+                            value & !3
+                        };
+                        regs.set_execution_mode(next_mode);
+                        regs.set_pc(next_pc);
                         loaded_pc = true;
+                        next_pc
                     } else {
                         regs.set_reg(*index, value);
-                    }
+                        value
+                    };
                     register_writes.push(RegisterWrite {
                         index: *index,
-                        value,
+                        value: loaded_value,
                     });
                 } else {
                     let value = regs.reg(*index);
@@ -109,6 +124,22 @@ pub fn execute_instruction<B: MemoryBus>(
                 });
             }
         }
+        DecodedInstruction::BranchLinkExchangeImmediate { offset } => {
+            let lr = pc.wrapping_add(4);
+            regs.set_lr(lr);
+            register_writes.push(RegisterWrite {
+                index: 14,
+                value: lr,
+            });
+
+            let target = ((pc as i64) + 8 + (offset as i64)) as u32;
+            regs.set_execution_mode(ExecutionMode::Thumb);
+            regs.set_pc(target & !1);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: target & !1,
+            });
+        }
         DecodedInstruction::BranchExchange { link, register } => {
             let target = regs.reg(register);
             if link {
@@ -128,7 +159,11 @@ pub fn execute_instruction<B: MemoryBus>(
             } else {
                 ExecutionMode::Arm
             };
-            let next_pc = target & !1;
+            let next_pc = if next_mode == ExecutionMode::Thumb {
+                target & !1
+            } else {
+                target & !3
+            };
             regs.set_execution_mode(next_mode);
             regs.set_pc(next_pc);
             register_writes.push(RegisterWrite {
@@ -271,8 +306,19 @@ pub fn execute_instruction<B: MemoryBus>(
             if load {
                 let value = memory.read32(GuestAddr::new(address))?;
                 if rd == 15 {
-                    regs.set_pc(value);
-                    register_writes.push(RegisterWrite { index: 15, value });
+                    let next_mode = if value & 1 != 0 {
+                        ExecutionMode::Thumb
+                    } else {
+                        ExecutionMode::Arm
+                    };
+                    let next_pc = if next_mode == ExecutionMode::Thumb {
+                        value & !1
+                    } else {
+                        value & !3
+                    };
+                    regs.set_execution_mode(next_mode);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite { index: 15, value: next_pc });
                 } else {
                     regs.set_reg(rd, value);
                     register_writes.push(RegisterWrite { index: rd, value });
@@ -397,7 +443,380 @@ pub fn execute_instruction<B: MemoryBus>(
                 }
             }
         }
-        DecodedInstruction::ThumbAddImmediate { rd, immediate } => {
+        DecodedInstruction::ThumbAddSub { sub, rd, rs, operand } => {
+            let left = regs.reg(rs);
+            let right = match operand {
+                ThumbOperand::Immediate(value) => value,
+                ThumbOperand::Register(index) => regs.reg(index),
+            };
+            let result = if sub {
+                left.wrapping_sub(right)
+            } else {
+                left.wrapping_add(right)
+            };
+            regs.set_reg(rd, result);
+            register_writes.push(RegisterWrite {
+                index: rd,
+                value: result,
+            });
+            if sub {
+                regs.cpsr_mut().update_nzcv_sub(left, right, result);
+            } else {
+                regs.cpsr_mut().update_nzcv_add(left, right, result);
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: next_pc,
+            });
+        }
+        DecodedInstruction::ThumbAdjustSp { subtract, immediate } => {
+            let sp = regs.sp();
+            let next_sp = if subtract {
+                sp.wrapping_sub(immediate)
+            } else {
+                sp.wrapping_add(immediate)
+            };
+            regs.set_sp(next_sp);
+            register_writes.push(RegisterWrite { index: 13, value: next_sp });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }        DecodedInstruction::ThumbAluRegister { op, rd, rs } => {
+            let left = regs.reg(rd);
+            let right = regs.reg(rs);
+            match op {
+                ThumbAluOp::Cmp => {
+                    let result = left.wrapping_sub(right);
+                    regs.cpsr_mut().update_nzcv_sub(left, right, result);
+                }
+                ThumbAluOp::Mvn => {
+                    let result = !right;
+                    regs.set_reg(rd, result);
+                    register_writes.push(RegisterWrite {
+                        index: rd,
+                        value: result,
+                    });
+                    regs.cpsr_mut().update_nz(result);
+                }
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: next_pc,
+            });
+        }
+        DecodedInstruction::ThumbShiftImmediate { rd, rs, shift } => {
+            let value = regs.reg(rs);
+            let (result, shifter_carry) = apply_register_shift(value, shift, regs.cpsr().carry());
+            regs.set_reg(rd, result);
+            register_writes.push(RegisterWrite { index: rd, value: result });
+            regs.cpsr_mut().update_nz(result);
+            if let Some(carry) = shifter_carry {
+                regs.cpsr_mut().set_carry(carry);
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbCmpImmediate { rn, immediate } => {
+            let left = regs.reg(rn);
+            let result = left.wrapping_sub(immediate);
+            regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: next_pc,
+            });
+        }
+        DecodedInstruction::ThumbLongBranchPrefix { offset } => {
+            let base = pc.wrapping_add(4);
+            let value = ((base as i64) + (offset as i64)) as u32;
+            regs.set_lr(value);
+            register_writes.push(RegisterWrite { index: 14, value });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLongBranchSuffix { exchange, offset } => {
+            let target = regs.lr().wrapping_add(offset);
+            let lr = pc.wrapping_add(2) | 1;
+            regs.set_lr(lr);
+            register_writes.push(RegisterWrite { index: 14, value: lr });
+            let next_mode = if exchange { ExecutionMode::Arm } else { ExecutionMode::Thumb };
+            let next_pc = if exchange { target & !3 } else { target & !1 };
+            regs.set_execution_mode(next_mode);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }        DecodedInstruction::ThumbBranch { offset } => {
+            let next_pc = ((pc as i64) + 4 + (offset as i64)) as u32;
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: next_pc,
+            });
+        }        DecodedInstruction::ThumbConditionalBranch { condition, offset } => {
+            let next_pc = if thumb_condition_passed(regs.cpsr(), condition) {
+                ((pc as i64) + 4 + (offset as i64)) as u32
+            } else {
+                pc.wrapping_add(2)
+            };
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite {
+                index: 15,
+                value: next_pc,
+            });
+        }
+        DecodedInstruction::ThumbHiRegisterOp { op, rd, rs } => {
+            let right = if rs == 15 {
+                pc.wrapping_add(4)
+            } else {
+                regs.reg(rs)
+            };
+            let left = if rd == 15 {
+                pc.wrapping_add(4)
+            } else {
+                regs.reg(rd)
+            };
+            match op {
+                ThumbHiOp::Add => {
+                    let result = left.wrapping_add(right);
+                    if rd == 15 {
+                        regs.set_pc(result & !1);
+                        register_writes.push(RegisterWrite { index: 15, value: result & !1 });
+                    } else {
+                        regs.set_reg(rd, result);
+                        register_writes.push(RegisterWrite { index: rd, value: result });
+                        let next_pc = pc.wrapping_add(2);
+                        regs.set_pc(next_pc);
+                        register_writes.push(RegisterWrite { index: 15, value: next_pc });
+                    }
+                }
+                ThumbHiOp::Cmp => {
+                    let result = left.wrapping_sub(right);
+                    regs.cpsr_mut().update_nzcv_sub(left, right, result);
+                    let next_pc = pc.wrapping_add(2);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite { index: 15, value: next_pc });
+                }
+                ThumbHiOp::Mov => {
+                    if rd == 15 {
+                        regs.set_pc(right & !1);
+                        register_writes.push(RegisterWrite { index: 15, value: right & !1 });
+                    } else {
+                        regs.set_reg(rd, right);
+                        register_writes.push(RegisterWrite { index: rd, value: right });
+                        let next_pc = pc.wrapping_add(2);
+                        regs.set_pc(next_pc);
+                        register_writes.push(RegisterWrite { index: 15, value: next_pc });
+                    }
+                }
+                ThumbHiOp::Bx => {
+                    let next_mode = if right & 1 != 0 {
+                        ExecutionMode::Thumb
+                    } else {
+                        ExecutionMode::Arm
+                    };
+                    let next_pc = if next_mode == ExecutionMode::Thumb {
+                        right & !1
+                    } else {
+                        right & !3
+                    };
+                    regs.set_execution_mode(next_mode);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite { index: 15, value: next_pc });
+                }
+                ThumbHiOp::Blx => {
+                    let lr = pc.wrapping_add(2) | 1;
+                    regs.set_lr(lr);
+                    register_writes.push(RegisterWrite { index: 14, value: lr });
+                    let next_pc = right & !3;
+                    regs.set_execution_mode(ExecutionMode::Arm);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite { index: 15, value: next_pc });
+                }
+            }
+        }
+        DecodedInstruction::ThumbLiteralLoad { rd, offset } => {
+            let base = (pc.wrapping_add(4)) & !3;
+            let addr = base.wrapping_add(offset);
+            let value = memory.read32(GuestAddr::new(addr))?;
+            regs.set_reg(rd, value);
+            register_writes.push(RegisterWrite { index: rd, value });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadAddress { sp, rd, offset } => {
+            let base = if sp {
+                regs.sp()
+            } else {
+                (pc.wrapping_add(4)) & !3
+            };
+            let value = base.wrapping_add(offset);
+            regs.set_reg(rd, value);
+            register_writes.push(RegisterWrite { index: rd, value });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadStoreRegisterOffset {
+            load,
+            byte,
+            offset,
+            base,
+            rd,
+        } => {
+            let addr = regs.reg(base).wrapping_add(regs.reg(offset));
+            if load {
+                let value = if byte {
+                    memory.read8(GuestAddr::new(addr))? as u32
+                } else {
+                    memory.read32(GuestAddr::new(addr))?
+                };
+                regs.set_reg(rd, value);
+                register_writes.push(RegisterWrite { index: rd, value });
+            } else if byte {
+                memory.write8(GuestAddr::new(addr), regs.reg(rd) as u8)?;
+            } else {
+                memory.write32(GuestAddr::new(addr), regs.reg(rd))?;
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadStoreMultiple { load, base, register_mask } => {
+            let mut addr = regs.reg(base);
+            for index in 0..8usize {
+                if (register_mask & (1 << index)) == 0 {
+                    continue;
+                }
+                if load {
+                    let value = memory.read32(GuestAddr::new(addr))?;
+                    regs.set_reg(index, value);
+                    register_writes.push(RegisterWrite { index, value });
+                } else {
+                    let value = regs.reg(index);
+                    memory.write32(GuestAddr::new(addr), value)?;
+                }
+                addr = addr.wrapping_add(4);
+            }
+            regs.set_reg(base, addr);
+            register_writes.push(RegisterWrite { index: base, value: addr });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadStoreSpRelative { load, rd, offset } => {
+            let addr = regs.sp().wrapping_add(offset);
+            if load {
+                let value = memory.read32(GuestAddr::new(addr))?;
+                regs.set_reg(rd, value);
+                register_writes.push(RegisterWrite { index: rd, value });
+            } else {
+                let value = regs.reg(rd);
+                memory.write32(GuestAddr::new(addr), value)?;
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadStoreByteImmediate { load, base, rd, offset } => {
+            let addr = regs.reg(base).wrapping_add(offset);
+            if load {
+                let value = memory.read8(GuestAddr::new(addr))? as u32;
+                regs.set_reg(rd, value);
+                register_writes.push(RegisterWrite { index: rd, value });
+            } else {
+                memory.write8(GuestAddr::new(addr), regs.reg(rd) as u8)?;
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbLoadStoreWordImmediate { load, base, rd, offset } => {
+            let addr = regs.reg(base).wrapping_add(offset);
+            if load {
+                let value = memory.read32(GuestAddr::new(addr))?;
+                regs.set_reg(rd, value);
+                register_writes.push(RegisterWrite { index: rd, value });
+            } else {
+                let value = regs.reg(rd);
+                memory.write32(GuestAddr::new(addr), value)?;
+            }
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbPop { register_mask, include_pc } => {
+            let mut sp = regs.sp();
+            for index in 0..8usize {
+                if (register_mask & (1 << index)) == 0 {
+                    continue;
+                }
+                let value = memory.read32(GuestAddr::new(sp))?;
+                regs.set_reg(index, value);
+                register_writes.push(RegisterWrite { index, value });
+                sp = sp.wrapping_add(4);
+            }
+            if include_pc {
+                let target = memory.read32(GuestAddr::new(sp))?;
+                sp = sp.wrapping_add(4);
+                regs.set_sp(sp);
+                register_writes.push(RegisterWrite { index: 13, value: sp });
+                let next_mode = if target & 1 != 0 {
+                    ExecutionMode::Thumb
+                } else {
+                    ExecutionMode::Arm
+                };
+                let next_pc = if next_mode == ExecutionMode::Thumb {
+                target & !1
+            } else {
+                target & !3
+            };
+                regs.set_execution_mode(next_mode);
+                regs.set_pc(next_pc);
+                register_writes.push(RegisterWrite { index: 15, value: next_pc });
+            } else {
+                regs.set_sp(sp);
+                register_writes.push(RegisterWrite { index: 13, value: sp });
+                let next_pc = pc.wrapping_add(2);
+                regs.set_pc(next_pc);
+                register_writes.push(RegisterWrite { index: 15, value: next_pc });
+            }
+        }
+        DecodedInstruction::ThumbPush { register_mask, include_lr } => {
+            let mut registers: Vec<usize> = (0..8)
+                .filter(|index| (register_mask & (1 << index)) != 0)
+                .collect();
+            if include_lr {
+                registers.push(14);
+            }
+            let mut sp = regs.sp();
+            for index in registers.iter().rev() {
+                sp = sp.wrapping_sub(4);
+                let value = regs.reg(*index);
+                memory.write32(GuestAddr::new(sp), value)?;
+            }
+            regs.set_sp(sp);
+            register_writes.push(RegisterWrite { index: 13, value: sp });
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }
+        DecodedInstruction::ThumbSubImmediate { rd, immediate } => {
+            let left = regs.reg(rd);
+            let result = left.wrapping_sub(immediate);
+            regs.set_reg(rd, result);
+            register_writes.push(RegisterWrite { index: rd, value: result });
+            regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
+            let next_pc = pc.wrapping_add(2);
+            regs.set_pc(next_pc);
+            register_writes.push(RegisterWrite { index: 15, value: next_pc });
+        }        DecodedInstruction::ThumbAddImmediate { rd, immediate } => {
             let result = regs.reg(rd).wrapping_add(immediate);
             regs.set_reg(rd, result);
             register_writes.push(RegisterWrite {
@@ -528,3 +947,33 @@ fn arm_condition_passed(cpsr: Cpsr, cond: u8) -> bool {
         _ => false,
     }
 }
+
+
+
+fn thumb_condition_passed(cpsr: Cpsr, condition: Condition) -> bool {
+    match condition {
+        Condition::Eq => cpsr.zero(),
+        Condition::Ne => !cpsr.zero(),
+        Condition::Al => true,
+        Condition::Other(_) => false,
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -39,6 +39,27 @@ pub enum RegisterShift {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbOperand {
+    Immediate(u32),
+    Register(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbAluOp {
+    Cmp,
+    Mvn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbHiOp {
+    Add,
+    Cmp,
+    Mov,
+    Bx,
+    Blx,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodedInstruction {
     BlockTransfer {
         load: bool,
@@ -56,6 +77,9 @@ pub enum DecodedInstruction {
     BranchExchange {
         link: bool,
         register: usize,
+    },
+    BranchLinkExchangeImmediate {
+        offset: i32,
     },
     DataProcessingImmediate {
         op: DataProcessingOp,
@@ -94,7 +118,100 @@ pub enum DecodedInstruction {
         rd: usize,
         immediate: u32,
     },
+    ThumbAddSub {
+        sub: bool,
+        rd: usize,
+        rs: usize,
+        operand: ThumbOperand,
+    },
+    ThumbAdjustSp {
+        subtract: bool,
+        immediate: u32,
+    },
+    ThumbAluRegister {
+        op: ThumbAluOp,
+        rd: usize,
+        rs: usize,
+    },
+    ThumbBranch {
+        offset: i32,
+    },
+    ThumbCmpImmediate {
+        rn: usize,
+        immediate: u32,
+    },
+    ThumbConditionalBranch {
+        condition: Condition,
+        offset: i32,
+    },
+    ThumbShiftImmediate {
+        rd: usize,
+        rs: usize,
+        shift: RegisterShift,
+    },
+    ThumbHiRegisterOp {
+        op: ThumbHiOp,
+        rd: usize,
+        rs: usize,
+    },
+    ThumbLiteralLoad {
+        rd: usize,
+        offset: u32,
+    },
+    ThumbLoadAddress {
+        sp: bool,
+        rd: usize,
+        offset: u32,
+    },
+    ThumbLoadStoreRegisterOffset {
+        load: bool,
+        byte: bool,
+        offset: usize,
+        base: usize,
+        rd: usize,
+    },
+    ThumbLoadStoreMultiple {
+        load: bool,
+        base: usize,
+        register_mask: u8,
+    },
+    ThumbLoadStoreSpRelative {
+        load: bool,
+        rd: usize,
+        offset: u32,
+    },
+    ThumbLoadStoreByteImmediate {
+        load: bool,
+        base: usize,
+        rd: usize,
+        offset: u32,
+    },
+    ThumbLoadStoreWordImmediate {
+        load: bool,
+        base: usize,
+        rd: usize,
+        offset: u32,
+    },
+    ThumbLongBranchPrefix {
+        offset: i32,
+    },
+    ThumbLongBranchSuffix {
+        exchange: bool,
+        offset: u32,
+    },
     ThumbMovImmediate {
+        rd: usize,
+        immediate: u32,
+    },
+    ThumbPop {
+        register_mask: u8,
+        include_pc: bool,
+    },
+    ThumbPush {
+        register_mask: u8,
+        include_lr: bool,
+    },
+    ThumbSubImmediate {
         rd: usize,
         immediate: u32,
     },
@@ -114,3 +231,9 @@ pub fn decode_opcode(mode: ExecutionMode, opcode: u32) -> DecodedInstruction {
 
 pub mod arm;
 pub mod thumb;
+
+
+
+
+
+
