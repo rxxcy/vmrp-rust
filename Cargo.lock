@@ -79,6 +79,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmrp-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "vmrp-windows"
 version = "0.1.0"
 dependencies = [
@@ -86,4 +90,5 @@ dependencies = [
  "vmrp-core",
  "vmrp-cpu",
  "vmrp-platform",
+ "vmrp-runtime",
 ]

@@ -4,14 +4,16 @@ use vmrp_abi::{MrChunk, MrpFile};
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
 use vmrp_platform::{
-    ExtBootstrap, ExtHost, FLAG_USE_UTF8_EDIT, MR_FAILED, VMRP_VER,
+    ExtBootstrap, ExtHost, HostTimerCommand, FLAG_USE_UTF8_EDIT, MR_FAILED, VMRP_VER,
 };
+use vmrp_runtime::{Runtime, RuntimeEvent, RuntimeStepResult, StageResult};
 
 const DEFAULT_MRP_PATH: &str = r"D:\opt\rust\vmrp\mrc\asm\asm.mrp";
 const START_MR_ADDR: u32 = 0x190000;
 const RUNTIME_DATA_ADDR: u32 = 0x1A0000;
 const DSM_INIT_CODE: i32 = -100;
 const MR_START_DSM_CODE: i32 = -99;
+const MR_TIMER_CODE: i32 = -96;
 
 #[derive(Debug, Clone)]
 struct RunnerConfig {
@@ -19,13 +21,6 @@ struct RunnerConfig {
     verbose: bool,
     step_limit: usize,
     trace_limit: usize,
-}
-
-#[derive(Debug)]
-struct StageResult {
-    label: &'static str,
-    executed: usize,
-    stop_reason: String,
 }
 
 #[derive(Debug)]
@@ -277,9 +272,11 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         .unwrap_or(1);
     cpu.regs_mut().set_reg(0, ext_entry_code);
 
+    let mut runtime = Runtime::new();
     let mut stages = Vec::new();
 
     let stage_ext_init = run_loop(
+        &mut runtime,
         &mut cpu,
         &mut host,
         config.step_limit,
@@ -298,7 +295,8 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     if let Some(helper) = helper {
         setup_helper_call(&mut cpu, helper, host.c_function_p_addr(), 0, 0, 0);
         let stage_helper_init = run_loop(
-            &mut cpu,
+        &mut runtime,
+        &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
@@ -326,7 +324,8 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             12,
         );
         let stage_dsm_init = run_loop(
-            &mut cpu,
+        &mut runtime,
+        &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
@@ -349,7 +348,8 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             12,
         );
         let stage_start_dsm = run_loop(
-            &mut cpu,
+        &mut runtime,
+        &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
@@ -358,6 +358,34 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         );
         start_dsm_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_start_dsm);
+
+        while let Some(event) = runtime.pop_event() {
+            match event {
+                RuntimeEvent::Bootstrap => {}
+                RuntimeEvent::Timer => {
+                    let timer_event_addr = write_event(cpu.memory_mut(), MR_TIMER_CODE, 0, 0)
+                        .map_err(|err| format!("write MR_TIMER event failed: {err:?}"))?;
+                    setup_helper_call(
+                        &mut cpu,
+                        helper,
+                        host.c_function_p_addr(),
+                        1,
+                        timer_event_addr,
+                        12,
+                    );
+                    let stage_timer = run_loop(
+                        &mut runtime,
+                        &mut cpu,
+                        &mut host,
+                        config.step_limit,
+                        config.trace_limit,
+                        "timer",
+                        config.verbose,
+                    );
+                    stages.push(stage_timer);
+                }
+            }
+        }
     }
 
     let no_unimplemented = stages
@@ -383,6 +411,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
 }
 
 fn run_loop(
+    runtime: &mut Runtime,
     cpu: &mut Cpu<TestMemory>,
     host: &mut ExtHost,
     step_limit: usize,
@@ -390,58 +419,55 @@ fn run_loop(
     label: &'static str,
     verbose: bool,
 ) -> StageResult {
-    let mut executed = 0usize;
-    let mut stop_reason = String::from("step budget exhausted");
+    let mut observed = 0usize;
 
-    for _ in 0..step_limit {
+    Runtime::run_stage(label, step_limit, || {
+        if let Some(command) = host.take_timer_command() {
+            match command {
+                HostTimerCommand::Start(delay) => runtime.start_timer(delay),
+                HostTimerCommand::Stop => runtime.stop_timer(),
+            }
+        }
+
+        runtime.sync_wall_clock();
+        runtime.poll_timers();
         if host.exit_requested() {
-            stop_reason = String::from("guest requested exit");
-            break;
+            return RuntimeStepResult::Stop(String::from("guest requested exit"));
         }
 
         if cpu.regs().pc() == 0 {
-            stop_reason = String::from("program returned to null pc");
-            break;
+            return RuntimeStepResult::Stop(String::from("program returned to null pc"));
         }
 
         match host.handle(cpu) {
             Ok(true) => {
-                executed += 1;
-                if verbose && executed <= trace_limit {
-                    println!("{label}_host_step[{executed}]=0x{:08X}", cpu.regs().pc());
+                observed += 1;
+                if verbose && observed <= trace_limit {
+                    println!("{label}_host_step[{observed}]=0x{:08X}", cpu.regs().pc());
                 }
-                continue;
+                return RuntimeStepResult::HostStep;
             }
             Ok(false) => {}
             Err(err) => {
-                stop_reason = format!("host callback error: {err:?}");
-                break;
+                return RuntimeStepResult::Stop(format!("host callback error: {err:?}"));
             }
         }
 
         let pre_pc = cpu.regs().pc();
         match cpu.step() {
             Ok(step) => {
-                executed += 1;
-                if verbose && executed <= trace_limit {
+                observed += 1;
+                if verbose && observed <= trace_limit {
                     println!(
-                        "{label}_step[{executed}] pc=0x{pre_pc:08X} op=0x{:08X}",
+                        "{label}_step[{observed}] pc=0x{pre_pc:08X} op=0x{:08X}",
                         step.trace.opcode
                     );
                 }
+                RuntimeStepResult::GuestStep
             }
-            Err(err) => {
-                stop_reason = format!("{err:?}");
-                break;
-            }
+            Err(err) => RuntimeStepResult::Stop(format!("{err:?}")),
         }
-    }
-
-    StageResult {
-        label,
-        executed,
-        stop_reason,
-    }
+    })
 }
 
 fn setup_helper_call(
@@ -520,4 +546,8 @@ fn write_c_string(
     *cursor = (*cursor + 3) & !3;
     Ok(start)
 }
+
+
+
+
 

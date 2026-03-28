@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
-use vmrp_platform::{ExtHost, FLAG_USE_UTF8_EDIT};
+use vmrp_platform::{ExtHost, HostTimerCommand, FLAG_USE_UTF8_EDIT};
 
 fn make_temp_dir() -> PathBuf {
     let nonce = SystemTime::now()
@@ -400,4 +400,179 @@ fn dsm_file_mutation_callbacks_round_trip_data_and_paths() {
     assert!(!dir.join("subdir").exists());
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn dsm_sleep_callback_respects_requested_delay() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let uptime_pc = cpu.memory().read32(GuestAddr::new(0x190024)).unwrap();
+    let sleep_pc = cpu.memory().read32(GuestAddr::new(0x19002C)).unwrap();
+
+    cpu.regs_mut().set_pc(uptime_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    assert!(host.handle(&mut cpu).unwrap());
+    let before = cpu.regs().reg(0);
+
+    cpu.regs_mut().set_pc(sleep_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, 120);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    cpu.regs_mut().set_pc(uptime_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    assert!(host.handle(&mut cpu).unwrap());
+    let after = cpu.regs().reg(0);
+
+    assert!(
+        after >= before + 100,
+        "sleep(120) should advance uptime by about 120ms, before={before}, after={after}"
+    );
+}
+
+#[test]
+fn dsm_rand_callbacks_follow_msvc_sequence() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let srand_pc = cpu.memory().read32(GuestAddr::new(0x19000C)).unwrap();
+    let rand_pc = cpu.memory().read32(GuestAddr::new(0x190010)).unwrap();
+
+    cpu.regs_mut().set_pc(srand_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 1);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    cpu.regs_mut().set_pc(rand_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 41);
+
+    cpu.regs_mut().set_pc(rand_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 18467);
+}
+
+#[test]
+fn dsm_timer_start_records_delay() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let timer_start_pc = cpu.memory().read32(GuestAddr::new(0x19001C)).unwrap();
+
+    cpu.regs_mut().set_pc(timer_start_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 123);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(host.pending_timer_delay_ms(), Some(123));
+}
+
+#[test]
+fn dsm_timer_restart_replaces_previous_delay() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let timer_start_pc = cpu.memory().read32(GuestAddr::new(0x19001C)).unwrap();
+
+    cpu.regs_mut().set_pc(timer_start_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 50);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    cpu.regs_mut().set_pc(timer_start_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, 75);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    assert_eq!(host.pending_timer_delay_ms(), Some(75));
+}
+
+#[test]
+fn dsm_timer_stop_clears_pending_delay() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let timer_start_pc = cpu.memory().read32(GuestAddr::new(0x19001C)).unwrap();
+    let timer_stop_pc = cpu.memory().read32(GuestAddr::new(0x190020)).unwrap();
+
+    cpu.regs_mut().set_pc(timer_start_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 40);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(host.pending_timer_delay_ms(), Some(40));
+
+    cpu.regs_mut().set_pc(timer_stop_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(host.pending_timer_delay_ms(), None);
+}
+
+#[test]
+fn dsm_timer_command_can_be_consumed_once() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let timer_start_pc = cpu.memory().read32(GuestAddr::new(0x19001C)).unwrap();
+
+    cpu.regs_mut().set_pc(timer_start_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 88);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Start(88)));
+    assert_eq!(host.take_timer_command(), None);
+}
+
+#[test]
+fn dsm_timer_stop_emits_stop_command() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let timer_stop_pc = cpu.memory().read32(GuestAddr::new(0x190020)).unwrap();
+
+    cpu.regs_mut().set_pc(timer_stop_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Stop));
+    assert_eq!(host.take_timer_command(), None);
 }

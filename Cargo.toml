@@ -5,5 +5,6 @@ members = [
   "crates/vmrp-cpu",
   "crates/vmrp-abi",
   "crates/vmrp-platform",
+  "crates/vmrp-runtime",
 ]
 resolver = "2"

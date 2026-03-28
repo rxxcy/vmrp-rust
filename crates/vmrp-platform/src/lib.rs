@@ -172,6 +172,12 @@ struct HostDateTime {
     second: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostTimerCommand {
+    Start(u32),
+    Stop,
+}
+
 #[derive(Debug)]
 pub struct ExtHost {
     pub mr_c_function_new_addr: GuestAddr,
@@ -191,6 +197,8 @@ pub struct ExtHost {
     verbose: bool,
     exit_requested: bool,
     rng_state: u32,
+    pending_timer_delay_ms: Option<u32>,
+    pending_timer_command: Option<HostTimerCommand>,
     uptime_epoch: Instant,
     files: BTreeMap<i32, HostFile>,
     next_file_handle: i32,
@@ -229,6 +237,8 @@ impl ExtHost {
             verbose: false,
             exit_requested: false,
             rng_state: 0x1234_5678,
+            pending_timer_delay_ms: None,
+            pending_timer_command: None,
             uptime_epoch: Instant::now(),
             files: BTreeMap::new(),
             next_file_handle: 3,
@@ -259,6 +269,14 @@ impl ExtHost {
 
     pub fn exit_requested(&self) -> bool {
         self.exit_requested
+    }
+
+    pub fn pending_timer_delay_ms(&self) -> Option<u32> {
+        self.pending_timer_delay_ms
+    }
+
+    pub fn take_timer_command(&mut self) -> Option<HostTimerCommand> {
+        self.pending_timer_command.take()
     }
 
     pub fn install_dsm_require_funcs<B: MemoryBus>(
@@ -516,9 +534,10 @@ impl ExtHost {
             DsmHostFn::Rand => {
                 self.rng_state = self
                     .rng_state
-                    .wrapping_mul(1664525)
-                    .wrapping_add(1013904223);
-                cpu.regs_mut().set_reg(0, (self.rng_state & 0x7FFF_FFFF) as i32 as u32);
+                    .wrapping_mul(214013)
+                    .wrapping_add(2531011);
+                cpu.regs_mut()
+                    .set_reg(0, (self.rng_state >> 16) & 0x7FFF);
                 return_to_lr(cpu);
             }
             DsmHostFn::MemGet => {
@@ -538,7 +557,16 @@ impl ExtHost {
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
-            DsmHostFn::TimerStart | DsmHostFn::TimerStop => {
+            DsmHostFn::TimerStart => {
+                let delay = cpu.regs().reg(0);
+                self.pending_timer_delay_ms = Some(delay);
+                self.pending_timer_command = Some(HostTimerCommand::Start(delay));
+                cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+                return_to_lr(cpu);
+            }
+            DsmHostFn::TimerStop => {
+                self.pending_timer_delay_ms = None;
+                self.pending_timer_command = Some(HostTimerCommand::Stop);
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -574,7 +602,7 @@ impl ExtHost {
                 return_to_lr(cpu);
             }
             DsmHostFn::Sleep => {
-                let ms = cpu.regs().reg(0).min(50);
+                let ms = cpu.regs().reg(0);
                 if ms > 0 {
                     thread::sleep(Duration::from_millis(ms as u64));
                 }
@@ -1010,4 +1038,10 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
+
+
+
+
+
+
 

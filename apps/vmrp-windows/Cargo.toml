@@ -8,3 +8,4 @@ vmrp-abi = { path = "../../crates/vmrp-abi" }
 vmrp-core = { path = "../../crates/vmrp-core" }
 vmrp-cpu = { path = "../../crates/vmrp-cpu" }
 vmrp-platform = { path = "../../crates/vmrp-platform" }
+vmrp-runtime = { path = "../../crates/vmrp-runtime" }
