@@ -162,6 +162,16 @@ struct HostDir {
     scratch_ptr: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct HostDateTime {
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
+
 #[derive(Debug)]
 pub struct ExtHost {
     pub mr_c_function_new_addr: GuestAddr,
@@ -539,15 +549,27 @@ impl ExtHost {
             }
             DsmHostFn::GetDatetime => {
                 let out = cpu.regs().reg(0);
-                if out != 0 {
-                    cpu.memory_mut().write8(GuestAddr::new(out), 0xEA)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(1)), 0x07)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(2)), 1)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(3)), 1)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(4)), 0)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(5)), 0)?;
-                    cpu.memory_mut().write8(GuestAddr::new(out.wrapping_add(6)), 0)?;
+                if out == 0 {
+                    cpu.regs_mut().set_reg(0, MR_FAILED as u32);
+                    return_to_lr(cpu);
+                    return Ok(());
                 }
+
+                let datetime = current_local_datetime();
+                let [year_lo, year_hi] = datetime.year.to_le_bytes();
+                cpu.memory_mut().write8(GuestAddr::new(out), year_lo)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(1)), year_hi)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(2)), datetime.month)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(3)), datetime.day)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(4)), datetime.hour)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(5)), datetime.minute)?;
+                cpu.memory_mut()
+                    .write8(GuestAddr::new(out.wrapping_add(6)), datetime.second)?;
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -908,4 +930,84 @@ fn write_guest_c_string<B: MemoryBus>(
     Ok(())
 }
 
+
+
+fn current_local_datetime() -> HostDateTime {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct SystemTimeWin {
+            year: u16,
+            month: u16,
+            day_of_week: u16,
+            day: u16,
+            hour: u16,
+            minute: u16,
+            second: u16,
+            milliseconds: u16,
+        }
+
+        unsafe extern "system" {
+            fn GetLocalTime(system_time: *mut SystemTimeWin);
+        }
+
+        let mut system_time = SystemTimeWin {
+            year: 0,
+            month: 0,
+            day_of_week: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            milliseconds: 0,
+        };
+        unsafe {
+            GetLocalTime(&mut system_time);
+        }
+        return HostDateTime {
+            year: system_time.year,
+            month: system_time.month as u8,
+            day: system_time.day as u8,
+            hour: system_time.hour as u8,
+            minute: system_time.minute as u8,
+            second: system_time.second as u8,
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let total_seconds = now.as_secs();
+        let second = (total_seconds % 60) as u8;
+        let minute = ((total_seconds / 60) % 60) as u8;
+        let hour = ((total_seconds / 3600) % 24) as u8;
+        let days = (total_seconds / 86_400) as i64;
+        let (year, month, day) = civil_from_days(days);
+        HostDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year as u16, month as u8, day as u8)
+}
 

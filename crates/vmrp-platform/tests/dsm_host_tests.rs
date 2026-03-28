@@ -41,6 +41,71 @@ fn write_c_string(memory: &mut TestMemory, addr: u32, value: &str) {
         .unwrap();
 }
 
+fn read_c_string(memory: &TestMemory, addr: u32) -> String {
+    let mut bytes = Vec::new();
+    let mut cursor = addr;
+    loop {
+        let byte = memory.read8(GuestAddr::new(cursor)).unwrap();
+        if byte == 0 {
+            break;
+        }
+        bytes.push(byte);
+        cursor = cursor.wrapping_add(1);
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
+#[derive(Debug)]
+struct DateTimeFields {
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
+
+#[cfg(windows)]
+fn current_local_time() -> DateTimeFields {
+    #[repr(C)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+
+    unsafe extern "system" {
+        fn GetLocalTime(system_time: *mut SystemTime);
+    }
+
+    let mut system_time = SystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milliseconds: 0,
+    };
+    unsafe {
+        GetLocalTime(&mut system_time);
+    }
+    DateTimeFields {
+        year: system_time.year,
+        month: system_time.month as u8,
+        day: system_time.day as u8,
+        hour: system_time.hour as u8,
+        minute: system_time.minute as u8,
+        second: system_time.second as u8,
+    }
+}
+
 #[test]
 fn install_dsm_require_funcs_sets_flags_and_callbacks() {
     let mut host = new_host();
@@ -100,5 +165,239 @@ fn dsm_file_callbacks_open_read_close() {
     assert_eq!(cpu.regs().reg(0) as i32, 0);
 
     let _ = fs::remove_file(file_path);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn dsm_file_info_and_getlen_callbacks_report_metadata() {
+    let dir = make_temp_dir();
+    let file_path = dir.join("sample.bin");
+    fs::write(&file_path, b"ABCDE").unwrap();
+
+    let mut host = new_host();
+    host.set_working_dir(&dir);
+
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, "sample.bin");
+    write_c_string(&mut memory, 0x191040, ".");
+
+    let mut cpu = Cpu::new(memory);
+
+    let info_pc = cpu.memory().read32(GuestAddr::new(0x190044)).unwrap();
+    cpu.regs_mut().set_pc(info_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 1);
+
+    cpu.regs_mut().set_pc(info_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, 0x191040);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 2);
+
+    let get_len_pc = cpu.memory().read32(GuestAddr::new(0x190064)).unwrap();
+    cpu.regs_mut().set_pc(get_len_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 5);
+
+    let _ = fs::remove_file(file_path);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn dsm_directory_callbacks_iterate_entries() {
+    let dir = make_temp_dir();
+    fs::write(dir.join("a.txt"), b"A").unwrap();
+    fs::write(dir.join("b.txt"), b"B").unwrap();
+
+    let mut host = new_host();
+    host.set_working_dir(&dir);
+
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, ".");
+
+    let mut cpu = Cpu::new(memory);
+
+    let open_dir_pc = cpu.memory().read32(GuestAddr::new(0x190058)).unwrap();
+    cpu.regs_mut().set_pc(open_dir_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    let handle = cpu.regs().reg(0) as i32;
+    assert!(handle >= 0);
+
+    let read_dir_pc = cpu.memory().read32(GuestAddr::new(0x19005C)).unwrap();
+    let mut entries = Vec::new();
+    loop {
+        cpu.regs_mut().set_pc(read_dir_pc);
+        cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+        cpu.regs_mut().set_lr(0x80004);
+        cpu.regs_mut().set_reg(0, handle as u32);
+        assert!(host.handle(&mut cpu).unwrap());
+        let ptr = cpu.regs().reg(0);
+        if ptr == 0 {
+            break;
+        }
+        entries.push(read_c_string(cpu.memory(), ptr));
+    }
+    entries.sort();
+    assert_eq!(entries, vec![String::from("a.txt"), String::from("b.txt")]);
+
+    let close_dir_pc = cpu.memory().read32(GuestAddr::new(0x190060)).unwrap();
+    cpu.regs_mut().set_pc(close_dir_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    cpu.regs_mut().set_reg(0, handle as u32);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn dsm_datetime_callback_rejects_null_pointer_and_reports_local_time() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let datetime_pc = cpu.memory().read32(GuestAddr::new(0x190028)).unwrap();
+
+    cpu.regs_mut().set_pc(datetime_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0) as i32, -1);
+
+    let expected = current_local_time();
+    cpu.regs_mut().set_pc(datetime_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(cpu.memory().read16(GuestAddr::new(0x191000)).unwrap(), expected.year);
+    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191002)).unwrap(), expected.month);
+    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191003)).unwrap(), expected.day);
+    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191004)).unwrap(), expected.hour);
+    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191005)).unwrap(), expected.minute);
+    let second = cpu.memory().read8(GuestAddr::new(0x191006)).unwrap();
+    assert!(second == expected.second || second == expected.second.saturating_add(1));
+}
+
+#[test]
+fn dsm_file_mutation_callbacks_round_trip_data_and_paths() {
+    let dir = make_temp_dir();
+
+    let mut host = new_host();
+    host.set_working_dir(&dir);
+
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, "subdir");
+    write_c_string(&mut memory, 0x191040, "subdir/from.bin");
+    write_c_string(&mut memory, 0x191080, "subdir/to.bin");
+    write_c_string(&mut memory, 0x1910C0, "XYZ");
+
+    let mut cpu = Cpu::new(memory);
+
+    let mkdir_pc = cpu.memory().read32(GuestAddr::new(0x190050)).unwrap();
+    cpu.regs_mut().set_pc(mkdir_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let open_pc = cpu.memory().read32(GuestAddr::new(0x190030)).unwrap();
+    cpu.regs_mut().set_pc(open_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, 0x191040);
+    cpu.regs_mut().set_reg(1, 4 | 8 | 16);
+    assert!(host.handle(&mut cpu).unwrap());
+    let fd = cpu.regs().reg(0) as i32;
+    assert!(fd >= 0);
+
+    let write_pc = cpu.memory().read32(GuestAddr::new(0x19003C)).unwrap();
+    cpu.regs_mut().set_pc(write_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    cpu.regs_mut().set_reg(1, 0x1910C0);
+    cpu.regs_mut().set_reg(2, 3);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 3);
+
+    let seek_pc = cpu.memory().read32(GuestAddr::new(0x190040)).unwrap();
+    cpu.regs_mut().set_pc(seek_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x8000C);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    cpu.regs_mut().set_reg(1, 0);
+    cpu.regs_mut().set_reg(2, 0);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let read_pc = cpu.memory().read32(GuestAddr::new(0x190038)).unwrap();
+    cpu.regs_mut().set_pc(read_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80010);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    cpu.regs_mut().set_reg(1, 0x191100);
+    cpu.regs_mut().set_reg(2, 3);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 3);
+    assert_eq!(read_c_string(cpu.memory(), 0x191100), "XYZ");
+
+    let close_pc = cpu.memory().read32(GuestAddr::new(0x190034)).unwrap();
+    cpu.regs_mut().set_pc(close_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80014);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let rename_pc = cpu.memory().read32(GuestAddr::new(0x19004C)).unwrap();
+    cpu.regs_mut().set_pc(rename_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80018);
+    cpu.regs_mut().set_reg(0, 0x191040);
+    cpu.regs_mut().set_reg(1, 0x191080);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let remove_pc = cpu.memory().read32(GuestAddr::new(0x190048)).unwrap();
+    cpu.regs_mut().set_pc(remove_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x8001C);
+    cpu.regs_mut().set_reg(0, 0x191080);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let rmdir_pc = cpu.memory().read32(GuestAddr::new(0x190054)).unwrap();
+    cpu.regs_mut().set_pc(rmdir_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80020);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    assert!(!dir.join("subdir").exists());
+
     let _ = fs::remove_dir_all(dir);
 }
