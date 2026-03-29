@@ -35,6 +35,8 @@ const MR_IS_FILE: i32 = 1;
 const MR_IS_DIR: i32 = 2;
 const MR_IS_INVALID: i32 = 8;
 const DSM_MEM_GET_SIZE: u32 = 4 * 1024 * 1024;
+const SCREEN_WIDTH: usize = 240;
+const SCREEN_HEIGHT: usize = 320;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExtBootstrap {
@@ -178,6 +180,14 @@ pub enum HostTimerCommand {
     Stop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostScreenRegion {
+    pub x: i32,
+    pub y: i32,
+    pub w: u16,
+    pub h: u16,
+}
+
 #[derive(Debug)]
 pub struct ExtHost {
     pub mr_c_function_new_addr: GuestAddr,
@@ -200,6 +210,8 @@ pub struct ExtHost {
     pending_timer_delay_ms: Option<u32>,
     pending_timer_command: Option<HostTimerCommand>,
     uptime_epoch: Instant,
+    screen_buffer: Vec<u16>,
+    dirty_region: Option<HostScreenRegion>,
     files: BTreeMap<i32, HostFile>,
     next_file_handle: i32,
     dirs: BTreeMap<i32, HostDir>,
@@ -240,6 +252,8 @@ impl ExtHost {
             pending_timer_delay_ms: None,
             pending_timer_command: None,
             uptime_epoch: Instant::now(),
+            screen_buffer: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            dirty_region: None,
             files: BTreeMap::new(),
             next_file_handle: 3,
             dirs: BTreeMap::new(),
@@ -277,6 +291,14 @@ impl ExtHost {
 
     pub fn take_timer_command(&mut self) -> Option<HostTimerCommand> {
         self.pending_timer_command.take()
+    }
+
+    pub fn screen_buffer(&self) -> &[u16] {
+        &self.screen_buffer
+    }
+
+    pub fn take_dirty_region(&mut self) -> Option<HostScreenRegion> {
+        self.dirty_region.take()
     }
 
     pub fn install_dsm_require_funcs<B: MemoryBus>(
@@ -547,13 +569,15 @@ impl ExtHost {
                     cpu.memory_mut().write32(GuestAddr::new(mem_base_ptr), ptr)?;
                     cpu.memory_mut()
                         .write32(GuestAddr::new(mem_len_ptr), DSM_MEM_GET_SIZE)?;
-                    cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+
+                cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 } else {
                     cpu.regs_mut().set_reg(0, MR_FAILED as u32);
                 }
                 return_to_lr(cpu);
             }
             DsmHostFn::MemFree => {
+
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -561,12 +585,14 @@ impl ExtHost {
                 let delay = cpu.regs().reg(0);
                 self.pending_timer_delay_ms = Some(delay);
                 self.pending_timer_command = Some(HostTimerCommand::Start(delay));
+
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
             DsmHostFn::TimerStop => {
                 self.pending_timer_delay_ms = None;
                 self.pending_timer_command = Some(HostTimerCommand::Stop);
+
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -598,6 +624,7 @@ impl ExtHost {
                     .write8(GuestAddr::new(out.wrapping_add(5)), datetime.minute)?;
                 cpu.memory_mut()
                     .write8(GuestAddr::new(out.wrapping_add(6)), datetime.second)?;
+
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -606,6 +633,7 @@ impl ExtHost {
                 if ms > 0 {
                     thread::sleep(Duration::from_millis(ms as u64));
                 }
+
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -878,6 +906,35 @@ impl ExtHost {
                 return_to_lr(cpu);
             }
             DsmHostFn::DrawBitmap => {
+                let bmp_ptr = cpu.regs().reg(0);
+                let x = cpu.regs().reg(1) as i32;
+                let y = cpu.regs().reg(2) as i32;
+                let w = cpu.regs().reg(3) as usize;
+                let h = cpu.memory().read32(GuestAddr::new(cpu.regs().sp()))? as usize;
+
+                for j in 0..h {
+                    for i in 0..w {
+                        let xx = x + i as i32;
+                        let yy = y + j as i32;
+                        if xx < 0 || yy < 0 || xx >= SCREEN_WIDTH as i32 || yy >= SCREEN_HEIGHT as i32 {
+                            continue;
+                        }
+
+                        let src_index = xx as u32 + yy as u32 * SCREEN_WIDTH as u32;
+                        let pixel = cpu.memory().read16(GuestAddr::new(
+                            bmp_ptr.wrapping_add(src_index.wrapping_mul(2)),
+                        ))?;
+                        let dst_index = yy as usize * SCREEN_WIDTH + xx as usize;
+                        self.screen_buffer[dst_index] = pixel;
+                    }
+                }
+
+                self.dirty_region = Some(HostScreenRegion {
+                    x,
+                    y,
+                    w: w as u16,
+                    h: h as u16,
+                });
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -1038,6 +1095,11 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
+
+
+
+
+
 
 
 

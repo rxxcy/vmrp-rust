@@ -5,6 +5,11 @@ use std::time::Instant;
 pub enum RuntimeEvent {
     Bootstrap,
     Timer,
+    GuestEvent {
+        code: i32,
+        p0: u32,
+        p1: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +76,16 @@ impl Runtime {
         }
     }
 
+    pub fn time_until_next_timer_ms(&self) -> Option<u32> {
+        self.timer_deadline_ms.map(|deadline| {
+            if deadline <= self.now_ms {
+                0
+            } else {
+                (deadline - self.now_ms) as u32
+            }
+        })
+    }
+
     pub fn poll_timers(&mut self) {
         if let Some(deadline) = self.timer_deadline_ms {
             if self.now_ms >= deadline {
@@ -106,6 +121,9 @@ impl Runtime {
         }
     }
 }
+
+
+
 
 
 

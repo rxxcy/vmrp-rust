@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use vmrp_abi::{MrChunk, MrpFile};
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
@@ -14,6 +16,7 @@ const RUNTIME_DATA_ADDR: u32 = 0x1A0000;
 const DSM_INIT_CODE: i32 = -100;
 const MR_START_DSM_CODE: i32 = -99;
 const MR_TIMER_CODE: i32 = -96;
+const MR_EVENT_CODE: i32 = -95;
 
 #[derive(Debug, Clone)]
 struct RunnerConfig {
@@ -359,33 +362,14 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         start_dsm_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_start_dsm);
 
-        while let Some(event) = runtime.pop_event() {
-            match event {
-                RuntimeEvent::Bootstrap => {}
-                RuntimeEvent::Timer => {
-                    let timer_event_addr = write_event(cpu.memory_mut(), MR_TIMER_CODE, 0, 0)
-                        .map_err(|err| format!("write MR_TIMER event failed: {err:?}"))?;
-                    setup_helper_call(
-                        &mut cpu,
-                        helper,
-                        host.c_function_p_addr(),
-                        1,
-                        timer_event_addr,
-                        12,
-                    );
-                    let stage_timer = run_loop(
-                        &mut runtime,
-                        &mut cpu,
-                        &mut host,
-                        config.step_limit,
-                        config.trace_limit,
-                        "timer",
-                        config.verbose,
-                    );
-                    stages.push(stage_timer);
-                }
-            }
-        }
+        drive_runtime_events(
+            &mut runtime,
+            &mut cpu,
+            &mut host,
+            helper,
+            config,
+            &mut stages,
+        )?;
     }
 
     let no_unimplemented = stages
@@ -470,6 +454,95 @@ fn run_loop(
     })
 }
 
+
+fn drive_runtime_events(
+    runtime: &mut Runtime,
+    cpu: &mut Cpu<TestMemory>,
+    host: &mut ExtHost,
+    helper: GuestAddr,
+    config: &RunnerConfig,
+    stages: &mut Vec<StageResult>,
+) -> Result<(), String> {
+    let mut idle_polls = 0usize;
+
+    loop {
+        runtime.sync_wall_clock();
+        runtime.poll_timers();
+
+        let mut dispatched = false;
+        while let Some(event) = runtime.pop_event() {
+            dispatched = true;
+            match event {
+                RuntimeEvent::Bootstrap => {}
+                RuntimeEvent::Timer => {
+                    let timer_event_addr = write_event(cpu.memory_mut(), MR_TIMER_CODE, 0, 0)
+                        .map_err(|err| format!("write MR_TIMER event failed: {err:?}"))?;
+                    setup_helper_call(
+                        cpu,
+                        helper,
+                        host.c_function_p_addr(),
+                        1,
+                        timer_event_addr,
+                        12,
+                    );
+                    let stage_timer = run_loop(
+                        runtime,
+                        cpu,
+                        host,
+                        config.step_limit,
+                        config.trace_limit,
+                        "timer",
+                        config.verbose,
+                    );
+                    stages.push(stage_timer);
+                }
+                RuntimeEvent::GuestEvent { code, p0, p1 } => {
+                    let event_payload_addr = write_event(cpu.memory_mut(), code, p0, p1)
+                        .map_err(|err| format!("write MR_EVENT payload failed: {err:?}"))?;
+                    let event_addr = write_event(cpu.memory_mut(), MR_EVENT_CODE, event_payload_addr, 0)
+                        .map_err(|err| format!("write MR_EVENT event failed: {err:?}"))?;
+                    setup_helper_call(
+                        cpu,
+                        helper,
+                        host.c_function_p_addr(),
+                        1,
+                        event_addr,
+                        12,
+                    );
+                    let stage_event = run_loop(
+                        runtime,
+                        cpu,
+                        host,
+                        config.step_limit,
+                        config.trace_limit,
+                        "event",
+                        config.verbose,
+                    );
+                    stages.push(stage_event);
+                }
+            }
+        }
+
+        if dispatched {
+            idle_polls = 0;
+            continue;
+        }
+
+        match runtime.time_until_next_timer_ms() {
+            Some(remaining) => {
+                if idle_polls >= config.step_limit {
+                    break;
+                }
+                let sleep_ms = remaining.clamp(1, 10) as u64;
+                thread::sleep(Duration::from_millis(sleep_ms));
+                idle_polls += 1;
+            }
+            None => break,
+        }
+    }
+
+    Ok(())
+}
 fn setup_helper_call(
     cpu: &mut Cpu<TestMemory>,
     helper: GuestAddr,
@@ -546,6 +619,8 @@ fn write_c_string(
     *cursor = (*cursor + 3) & !3;
     Ok(start)
 }
+
+
 
 
 

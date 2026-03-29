@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
-use vmrp_platform::{ExtHost, HostTimerCommand, FLAG_USE_UTF8_EDIT};
+use vmrp_platform::{ExtHost, HostScreenRegion, HostTimerCommand, FLAG_USE_UTF8_EDIT};
 
 fn make_temp_dir() -> PathBuf {
     let nonce = SystemTime::now()
@@ -575,4 +575,73 @@ fn dsm_timer_stop_emits_stop_command() {
 
     assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Stop));
     assert_eq!(host.take_timer_command(), None);
+}
+
+#[test]
+fn dsm_draw_bitmap_refreshes_host_framebuffer_region() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    memory.write16(GuestAddr::new(0x191000), 0x1111).unwrap();
+    memory.write16(GuestAddr::new(0x191002), 0x2222).unwrap();
+    memory.write16(GuestAddr::new(0x1911E0), 0x3333).unwrap();
+    memory.write16(GuestAddr::new(0x1911E2), 0x4444).unwrap();
+    memory.write32(GuestAddr::new(0x192000), 2).unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let draw_pc = cpu.memory().read32(GuestAddr::new(0x190068)).unwrap();
+
+    cpu.regs_mut().set_pc(draw_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_sp(0x192000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 0);
+    cpu.regs_mut().set_reg(2, 0);
+    cpu.regs_mut().set_reg(3, 2);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    let framebuffer = host.screen_buffer();
+    assert_eq!(framebuffer[0], 0x1111);
+    assert_eq!(framebuffer[1], 0x2222);
+    assert_eq!(framebuffer[240], 0x3333);
+    assert_eq!(framebuffer[241], 0x4444);
+}
+
+
+#[test]
+fn dsm_draw_bitmap_marks_dirty_region() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    memory.write16(GuestAddr::new(0x191000), 0x7777).unwrap();
+    memory.write32(GuestAddr::new(0x192000), 1).unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let draw_pc = cpu.memory().read32(GuestAddr::new(0x190068)).unwrap();
+
+    cpu.regs_mut().set_pc(draw_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_sp(0x192000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 5);
+    cpu.regs_mut().set_reg(2, 7);
+    cpu.regs_mut().set_reg(3, 1);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    assert_eq!(
+        host.take_dirty_region(),
+        Some(HostScreenRegion {
+            x: 5,
+            y: 7,
+            w: 1,
+            h: 1,
+        })
+    );
+    assert_eq!(host.take_dirty_region(), None);
 }
