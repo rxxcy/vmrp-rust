@@ -116,7 +116,39 @@ fn install_dsm_require_funcs_sets_flags_and_callbacks() {
 
     assert_ne!(memory.read32(GuestAddr::new(0x190030)).unwrap(), 0);
     assert_ne!(memory.read32(GuestAddr::new(0x190038)).unwrap(), 0);
-    assert_eq!(memory.read32(GuestAddr::new(0x1900CC)).unwrap(), FLAG_USE_UTF8_EDIT);
+    assert_eq!(
+        memory.read32(GuestAddr::new(0x1900CC)).unwrap(),
+        FLAG_USE_UTF8_EDIT
+    );
+}
+
+#[test]
+fn dsm_mem_get_returns_memory_manager_region_even_when_scratch_alloc_is_small() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let mem_get_pc = cpu.memory().read32(GuestAddr::new(0x190014)).unwrap();
+    cpu.regs_mut().set_pc(mem_get_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 0x191004);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    let base = cpu.memory().read32(GuestAddr::new(0x191000)).unwrap();
+    let len = cpu.memory().read32(GuestAddr::new(0x191004)).unwrap();
+    let manager_base = DEFAULT_LAYOUT.memory_manager_address().get();
+    let manager_end = manager_base.wrapping_add(DEFAULT_LAYOUT.memory_manager_size());
+
+    assert!(base >= manager_base);
+    assert!(base < manager_end);
+    assert!(len > 0);
+    assert!(base.wrapping_add(len) <= manager_end);
 }
 
 #[test]
@@ -154,7 +186,10 @@ fn dsm_file_callbacks_open_read_close() {
     cpu.regs_mut().set_reg(2, 4);
     assert!(host.handle(&mut cpu).unwrap());
     assert_eq!(cpu.regs().reg(0), 4);
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x191100)).unwrap(), 0x44434241);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x191100)).unwrap(),
+        0x44434241
+    );
 
     let close_pc = cpu.memory().read32(GuestAddr::new(0x190034)).unwrap();
     cpu.regs_mut().set_pc(close_pc);
@@ -289,11 +324,26 @@ fn dsm_datetime_callback_rejects_null_pointer_and_reports_local_time() {
     cpu.regs_mut().set_reg(0, 0x191000);
     assert!(host.handle(&mut cpu).unwrap());
     assert_eq!(cpu.regs().reg(0), 0);
-    assert_eq!(cpu.memory().read16(GuestAddr::new(0x191000)).unwrap(), expected.year);
-    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191002)).unwrap(), expected.month);
-    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191003)).unwrap(), expected.day);
-    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191004)).unwrap(), expected.hour);
-    assert_eq!(cpu.memory().read8(GuestAddr::new(0x191005)).unwrap(), expected.minute);
+    assert_eq!(
+        cpu.memory().read16(GuestAddr::new(0x191000)).unwrap(),
+        expected.year
+    );
+    assert_eq!(
+        cpu.memory().read8(GuestAddr::new(0x191002)).unwrap(),
+        expected.month
+    );
+    assert_eq!(
+        cpu.memory().read8(GuestAddr::new(0x191003)).unwrap(),
+        expected.day
+    );
+    assert_eq!(
+        cpu.memory().read8(GuestAddr::new(0x191004)).unwrap(),
+        expected.hour
+    );
+    assert_eq!(
+        cpu.memory().read8(GuestAddr::new(0x191005)).unwrap(),
+        expected.minute
+    );
     let second = cpu.memory().read8(GuestAddr::new(0x191006)).unwrap();
     assert!(second == expected.second || second == expected.second.saturating_add(1));
 }
@@ -610,7 +660,6 @@ fn dsm_draw_bitmap_refreshes_host_framebuffer_region() {
     assert_eq!(framebuffer[241], 0x4444);
 }
 
-
 #[test]
 fn dsm_draw_bitmap_marks_dirty_region() {
     let mut host = new_host();
@@ -645,3 +694,4 @@ fn dsm_draw_bitmap_marks_dirty_region() {
     );
     assert_eq!(host.take_dirty_region(), None);
 }
+

@@ -122,7 +122,10 @@ fn decode_fallback(opcode: u16) -> DecodedInstruction {
     if opcode & 0xF000 == 0xD000 && ((opcode >> 8) & 0xF) != 0xF {
         let cond = Condition::from_bits(((opcode >> 8) & 0xF) as u8);
         let offset = (((opcode & 0xFF) as i8 as i32) << 1) as i32;
-        return DecodedInstruction::ThumbConditionalBranch { condition: cond, offset };
+        return DecodedInstruction::ThumbConditionalBranch {
+            condition: cond,
+            offset,
+        };
     }
 
     if opcode & 0xF800 == 0xE800 {
@@ -202,13 +205,6 @@ fn decode_hi_register(opcode: u16) -> DecodedInstruction {
     DecodedInstruction::ThumbHiRegisterOp { op, rd, rs }
 }
 
-
-
-
-
-
-
-
 fn decode_shift_immediate(opcode: u16) -> DecodedInstruction {
     let shift = match (opcode >> 11) & 0x3 {
         0 => RegisterShift::Lsl(((opcode >> 6) & 0x1F) as u8),
@@ -229,5 +225,3 @@ fn decode_shift_immediate(opcode: u16) -> DecodedInstruction {
         shift,
     }
 }
-
-

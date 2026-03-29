@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vmrp_core::GuestAddr;
+use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryAccessError, MemoryBus};
 
 pub const MR_MALLOC_OFFSET: u32 = 0x0;
@@ -70,13 +70,15 @@ impl ExtBootstrap {
             memory.write32(slot, self.mr_free_addr.get())?;
         }
 
-        let mr_malloc_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_MALLOC_OFFSET));
+        let mr_malloc_slot =
+            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_MALLOC_OFFSET));
         memory.write32(mr_malloc_slot, self.mr_malloc_addr.get())?;
 
         let mr_free_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_FREE_OFFSET));
         memory.write32(mr_free_slot, self.mr_free_addr.get())?;
 
-        let mr_realloc_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_REALLOC_OFFSET));
+        let mr_realloc_slot =
+            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_REALLOC_OFFSET));
         memory.write32(mr_realloc_slot, self.mr_realloc_addr.get())?;
 
         let memcpy_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MEMCPY_OFFSET));
@@ -85,8 +87,11 @@ impl ExtBootstrap {
         let memset_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MEMSET_OFFSET));
         memory.write32(memset_slot, self.memset_addr.get())?;
 
-        let c_function_new_slot =
-            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_C_FUNCTION_NEW_OFFSET));
+        let c_function_new_slot = GuestAddr::new(
+            self.mr_table_addr
+                .get()
+                .wrapping_add(MR_C_FUNCTION_NEW_OFFSET),
+        );
         memory.write32(c_function_new_slot, self.mr_c_function_new_addr.get())?;
 
         // Host callback stubs. Actual behavior is implemented in ExtHost::handle.
@@ -243,7 +248,10 @@ impl ExtHost {
             alloc_size,
             ext_helper_addr: None,
             next_alloc: alloc_base.get(),
-            next_callback: alloc_base.get().wrapping_add(alloc_size).wrapping_add(0x1000),
+            next_callback: alloc_base
+                .get()
+                .wrapping_add(alloc_size)
+                .wrapping_add(0x1000),
             dsm_callbacks: BTreeMap::new(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
@@ -446,7 +454,10 @@ impl ExtHost {
         return_to_lr(cpu);
     }
 
-    fn handle_mr_realloc<B: MemoryBus>(&mut self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+    fn handle_mr_realloc<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
         let old_ptr = cpu.regs().reg(0);
         let new_len = cpu.regs().reg(1);
 
@@ -456,7 +467,9 @@ impl ExtHost {
             self.alloc(new_len).unwrap_or(0)
         } else if let Some(new_ptr) = self.alloc(new_len) {
             for offset in 0..new_len {
-                let byte = cpu.memory().read8(GuestAddr::new(old_ptr.wrapping_add(offset)))?;
+                let byte = cpu
+                    .memory()
+                    .read8(GuestAddr::new(old_ptr.wrapping_add(offset)))?;
                 cpu.memory_mut()
                     .write8(GuestAddr::new(new_ptr.wrapping_add(offset)), byte)?;
             }
@@ -476,7 +489,9 @@ impl ExtHost {
         let len = cpu.regs().reg(2);
 
         for offset in 0..len {
-            let value = cpu.memory().read8(GuestAddr::new(src.wrapping_add(offset)))?;
+            let value = cpu
+                .memory()
+                .read8(GuestAddr::new(src.wrapping_add(offset)))?;
             cpu.memory_mut()
                 .write8(GuestAddr::new(dst.wrapping_add(offset)), value)?;
         }
@@ -554,30 +569,23 @@ impl ExtHost {
                 return_to_lr(cpu);
             }
             DsmHostFn::Rand => {
-                self.rng_state = self
-                    .rng_state
-                    .wrapping_mul(214013)
-                    .wrapping_add(2531011);
-                cpu.regs_mut()
-                    .set_reg(0, (self.rng_state >> 16) & 0x7FFF);
+                self.rng_state = self.rng_state.wrapping_mul(214013).wrapping_add(2531011);
+                cpu.regs_mut().set_reg(0, (self.rng_state >> 16) & 0x7FFF);
                 return_to_lr(cpu);
             }
             DsmHostFn::MemGet => {
                 let mem_base_ptr = cpu.regs().reg(0);
                 let mem_len_ptr = cpu.regs().reg(1);
-                if let Some(ptr) = self.alloc(DSM_MEM_GET_SIZE) {
-                    cpu.memory_mut().write32(GuestAddr::new(mem_base_ptr), ptr)?;
-                    cpu.memory_mut()
-                        .write32(GuestAddr::new(mem_len_ptr), DSM_MEM_GET_SIZE)?;
-
+                let mem_base = DEFAULT_LAYOUT.memory_manager_address().get();
+                let mem_len = DEFAULT_LAYOUT.memory_manager_size().min(DSM_MEM_GET_SIZE);
+                cpu.memory_mut()
+                    .write32(GuestAddr::new(mem_base_ptr), mem_base)?;
+                cpu.memory_mut()
+                    .write32(GuestAddr::new(mem_len_ptr), mem_len)?;
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
-                } else {
-                    cpu.regs_mut().set_reg(0, MR_FAILED as u32);
-                }
                 return_to_lr(cpu);
             }
             DsmHostFn::MemFree => {
-
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -916,7 +924,11 @@ impl ExtHost {
                     for i in 0..w {
                         let xx = x + i as i32;
                         let yy = y + j as i32;
-                        if xx < 0 || yy < 0 || xx >= SCREEN_WIDTH as i32 || yy >= SCREEN_HEIGHT as i32 {
+                        if xx < 0
+                            || yy < 0
+                            || xx >= SCREEN_WIDTH as i32
+                            || yy >= SCREEN_HEIGHT as i32
+                        {
                             continue;
                         }
 
@@ -1015,8 +1027,6 @@ fn write_guest_c_string<B: MemoryBus>(
     Ok(())
 }
 
-
-
 fn current_local_datetime() -> HostDateTime {
     #[cfg(windows)]
     {
@@ -1095,15 +1105,4 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
-
-
-
-
-
-
-
-
-
-
-
 

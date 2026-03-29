@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use vmrp_abi::MrpFile;
+use vmrp_abi::{ExtFile, MrpFile};
 
 fn real_mrp_path() -> PathBuf {
     PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\asm.mrp")
@@ -8,6 +8,14 @@ fn real_mrp_path() -> PathBuf {
 
 fn real_ext_path() -> PathBuf {
     PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\cfunction.ext")
+}
+
+fn fallback_mrp_path() -> PathBuf {
+    PathBuf::from(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\ydqtwo.mrp")
+}
+
+fn fallback_ext_path() -> PathBuf {
+    PathBuf::from(r"D:\opt\rust\vmrp\wasm\dist\fs\cfunction.ext")
 }
 
 #[test]
@@ -47,6 +55,17 @@ fn builds_runtime_assets_from_real_mrp() {
 
     assert_eq!(assets.cfunction_ext().header(), b"MRPGCMAP");
     assert_eq!(assets.start_mr().len(), 2490);
+    assert_eq!(&assets.start_mr()[..4], &[0x1B, b'M', b'R', b'P']);
+}
+
+#[test]
+fn builds_runtime_assets_with_external_helper_when_package_has_no_cfunction_ext() {
+    let mrp = MrpFile::from_path(fallback_mrp_path()).unwrap();
+    let ext = ExtFile::from_path(fallback_ext_path()).unwrap();
+    let assets = mrp.runtime_assets_with_ext(ext).unwrap();
+
+    assert_eq!(assets.cfunction_ext().header(), b"MRPGCMAP");
+    assert!(assets.start_mr().len() > 1000);
     assert_eq!(&assets.start_mr()[..4], &[0x1B, b'M', b'R', b'P']);
 }
 

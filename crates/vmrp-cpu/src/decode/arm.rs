@@ -3,6 +3,7 @@ use super::{Condition, DataProcessingOp, DecodedInstruction, RegisterShift};
 const BLOCK_TRANSFER_TAG: u32 = 0b100 << 25;
 const DATA_PROCESSING_IMMEDIATE_TAG: u32 = 0b001 << 25;
 const SINGLE_DATA_TRANSFER_IMMEDIATE_TAG: u32 = 0b010 << 25;
+const SINGLE_DATA_TRANSFER_REGISTER_TAG: u32 = 0b011 << 25;
 const BRANCH_TAG: u32 = 0b101 << 25;
 const BX_MASK: u32 = 0x0FFF_FFF0;
 const BX_VALUE: u32 = 0x012F_FF10;
@@ -38,11 +39,11 @@ pub fn decode(opcode: u32) -> DecodedInstruction {
         BLOCK_TRANSFER_TAG => decode_block_transfer(opcode),
         DATA_PROCESSING_IMMEDIATE_TAG => decode_data_processing_immediate(opcode),
         SINGLE_DATA_TRANSFER_IMMEDIATE_TAG => decode_single_data_transfer_immediate(opcode),
+        SINGLE_DATA_TRANSFER_REGISTER_TAG => decode_single_data_transfer_register(opcode),
         BRANCH_TAG => decode_branch(opcode),
         _ => decode_data_processing_register(opcode),
     }
 }
-
 
 fn decode_multiply_long(opcode: u32) -> DecodedInstruction {
     DecodedInstruction::MultiplyLong {
@@ -75,6 +76,8 @@ fn decode_data_processing_immediate(opcode: u32) -> DecodedInstruction {
         0b0010 => DataProcessingOp::Sub,
         0b1010 => DataProcessingOp::Cmp,
         0b1011 => DataProcessingOp::Cmn,
+        0b1111 => DataProcessingOp::Mvn,
+        0b1110 => DataProcessingOp::Bic,
         _ => return DecodedInstruction::Unknown { opcode },
     };
 
@@ -105,21 +108,15 @@ fn decode_data_processing_register(opcode: u32) -> DecodedInstruction {
         0b0100 => DataProcessingOp::Add,
         0b0010 => DataProcessingOp::Sub,
         0b1101 => DataProcessingOp::Mov,
+        0b1010 => DataProcessingOp::Cmp,
+        0b1011 => DataProcessingOp::Cmn,
+        0b1111 => DataProcessingOp::Mvn,
+        0b1110 => DataProcessingOp::Bic,
         _ => return DecodedInstruction::Unknown { opcode },
     };
 
-    // Register-specified shift is not implemented yet.
-    if ((opcode >> 4) & 1) != 0 {
+    let Some(shift) = decode_immediate_shift(opcode) else {
         return DecodedInstruction::Unknown { opcode };
-    }
-
-    let shift_imm = ((opcode >> 7) & 0x1F) as u8;
-    let shift = match (opcode >> 5) & 0x3 {
-        0b00 => RegisterShift::Lsl(shift_imm),
-        0b01 => RegisterShift::Lsr(if shift_imm == 0 { 32 } else { shift_imm }),
-        0b10 => RegisterShift::Asr(if shift_imm == 0 { 32 } else { shift_imm }),
-        0b11 => RegisterShift::Ror(shift_imm),
-        _ => return DecodedInstruction::Unknown { opcode },
     };
 
     DecodedInstruction::DataProcessingRegister {
@@ -135,9 +132,28 @@ fn decode_data_processing_register(opcode: u32) -> DecodedInstruction {
 fn decode_single_data_transfer_immediate(opcode: u32) -> DecodedInstruction {
     DecodedInstruction::SingleDataTransferImmediate {
         load: ((opcode >> 20) & 1) != 0,
+        byte: ((opcode >> 22) & 1) != 0,
         base: ((opcode >> 16) & 0xF) as usize,
         rd: ((opcode >> 12) & 0xF) as usize,
         offset: opcode & 0xFFF,
+        add_offset: ((opcode >> 23) & 1) != 0,
+        pre_index: ((opcode >> 24) & 1) != 0,
+        write_back: ((opcode >> 21) & 1) != 0,
+    }
+}
+
+fn decode_single_data_transfer_register(opcode: u32) -> DecodedInstruction {
+    let Some(shift) = decode_immediate_shift(opcode) else {
+        return DecodedInstruction::Unknown { opcode };
+    };
+
+    DecodedInstruction::SingleDataTransferRegister {
+        load: ((opcode >> 20) & 1) != 0,
+        byte: ((opcode >> 22) & 1) != 0,
+        base: ((opcode >> 16) & 0xF) as usize,
+        rd: ((opcode >> 12) & 0xF) as usize,
+        rm: (opcode & 0xF) as usize,
+        shift,
         add_offset: ((opcode >> 23) & 1) != 0,
         pre_index: ((opcode >> 24) & 1) != 0,
         write_back: ((opcode >> 21) & 1) != 0,
@@ -163,3 +179,20 @@ fn decode_blx_immediate(opcode: u32) -> DecodedInstruction {
 
     DecodedInstruction::BranchLinkExchangeImmediate { offset }
 }
+
+fn decode_immediate_shift(opcode: u32) -> Option<RegisterShift> {
+    if ((opcode >> 4) & 1) != 0 {
+        return None;
+    }
+
+    let shift_imm = ((opcode >> 7) & 0x1F) as u8;
+    Some(match (opcode >> 5) & 0x3 {
+        0b00 => RegisterShift::Lsl(shift_imm),
+        0b01 => RegisterShift::Lsr(if shift_imm == 0 { 32 } else { shift_imm }),
+        0b10 => RegisterShift::Asr(if shift_imm == 0 { 32 } else { shift_imm }),
+        0b11 => RegisterShift::Ror(shift_imm),
+        _ => return None,
+    })
+}
+
+

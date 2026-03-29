@@ -91,7 +91,10 @@ fn bootstrap_seeds_c_function_context_for_ext_type_store() {
     let (mut cpu, mut host) = new_bootstrapped_real_ext_cpu();
     step_n(&mut cpu, &mut host, 18);
 
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x80004)).unwrap(), 0x182000);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x80004)).unwrap(),
+        0x182000
+    );
     assert_eq!(cpu.memory().read32(GuestAddr::new(0x182008)).unwrap(), 1);
     assert_eq!(cpu.regs().pc(), 0x8004C);
 }
@@ -101,7 +104,10 @@ fn bootstrap_seeds_mr_malloc_stub_for_indirect_call() {
     let (mut cpu, mut host) = new_bootstrapped_real_ext_cpu();
     step_n(&mut cpu, &mut host, 44);
 
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x180000)).unwrap(), 0x181100);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x180000)).unwrap(),
+        0x181100
+    );
     assert_ne!(cpu.regs().reg(0), 0);
     assert_eq!(cpu.regs().pc(), 0x80840);
 }
@@ -136,7 +142,10 @@ fn host_handles_memcpy_stub() {
     assert!(host.handle(&mut cpu).unwrap());
     assert_eq!(cpu.regs().pc(), 0x800D0);
     assert_eq!(cpu.regs().reg(0), 0x183200);
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x183200)).unwrap(), 0x44332211);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x183200)).unwrap(),
+        0x44332211
+    );
 }
 
 #[test]
@@ -165,7 +174,10 @@ fn host_handles_memset_stub() {
     assert!(host.handle(&mut cpu).unwrap());
     assert_eq!(cpu.regs().pc(), 0x80104);
     assert_eq!(cpu.regs().reg(0), 0x183400);
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x183400)).unwrap(), 0x7F7F7F7F);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x183400)).unwrap(),
+        0x7F7F7F7F
+    );
 }
 
 #[test]
@@ -196,5 +208,3 @@ fn host_handles_mr_c_function_new_stub() {
     let helper = host.ext_helper_addr().unwrap();
     assert!(helper.get() >= 0x80000);
 }
-
-

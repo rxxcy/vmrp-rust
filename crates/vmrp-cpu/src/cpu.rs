@@ -58,7 +58,14 @@ impl<B: MemoryBus> Cpu<B> {
     pub fn step(&mut self) -> Result<StepResult, CpuError> {
         let fetched = fetch_opcode(&self.memory, &self.regs)?;
         let decoded = decode_opcode(fetched.mode, fetched.opcode);
-        execute_instruction(&mut self.memory, &mut self.regs, decoded, fetched.pc, fetched.mode, fetched.opcode)
+        execute_instruction(
+            &mut self.memory,
+            &mut self.regs,
+            decoded,
+            fetched.pc,
+            fetched.mode,
+            fetched.opcode,
+        )
     }
 
     pub fn run_until(&mut self, max_steps: usize) -> Result<(), CpuError> {
@@ -72,5 +79,3 @@ impl<B: MemoryBus> Cpu<B> {
         })
     }
 }
-
-

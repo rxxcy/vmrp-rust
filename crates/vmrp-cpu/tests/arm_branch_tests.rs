@@ -82,7 +82,10 @@ fn run_until_stops_after_step_limit() {
 
     assert!(matches!(
         err,
-        CpuError::StepLimitExceeded { steps: 3, last_pc: 0x80000 }
+        CpuError::StepLimitExceeded {
+            steps: 3,
+            last_pc: 0x80000
+        }
     ));
 }
 
@@ -101,8 +104,12 @@ fn unknown_arm_opcode_is_skipped_when_condition_fails() {
 fn arm_block_transfer_load_pc_switches_to_thumb_when_lsb_set() {
     let mut cpu = new_arm_cpu(0xE8BD_8008);
     cpu.regs_mut().set_sp(0x80080);
-    cpu.memory_mut().write32(GuestAddr::new(0x80080), 0x1111_2222).unwrap();
-    cpu.memory_mut().write32(GuestAddr::new(0x80084), 0x80021).unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80080), 0x1111_2222)
+        .unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80084), 0x80021)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -114,8 +121,12 @@ fn arm_block_transfer_load_pc_switches_to_thumb_when_lsb_set() {
 fn arm_block_transfer_load_pc_aligns_to_word_boundary() {
     let mut cpu = new_arm_cpu(0xE8BD_8008);
     cpu.regs_mut().set_sp(0x80080);
-    cpu.memory_mut().write32(GuestAddr::new(0x80080), 0x1111_2222).unwrap();
-    cpu.memory_mut().write32(GuestAddr::new(0x80084), 0x80022).unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80080), 0x1111_2222)
+        .unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80084), 0x80022)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -144,6 +155,3 @@ fn blx_immediate_switches_to_thumb_and_branches() {
     assert_eq!(cpu.regs().pc(), 0x8000C);
     assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Thumb);
 }
-
-
-

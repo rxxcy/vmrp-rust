@@ -27,5 +27,7 @@ fn parses_real_start_mr_chunk_header_and_main_function() {
 #[test]
 fn rejects_invalid_mr_signature() {
     let err = MrChunk::from_bytes(b"NOT_MR_CHUNK").unwrap_err();
-    assert!(format!("{err:?}").contains("InvalidSignature") || format!("{err:?}").contains("Truncated"));
+    assert!(
+        format!("{err:?}").contains("InvalidSignature") || format!("{err:?}").contains("Truncated")
+    );
 }

@@ -5,11 +5,7 @@ use std::time::Instant;
 pub enum RuntimeEvent {
     Bootstrap,
     Timer,
-    GuestEvent {
-        code: i32,
-        p0: u32,
-        p1: u32,
-    },
+    GuestEvent { code: i32, p0: u32, p1: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,10 +117,3 @@ impl Runtime {
         }
     }
 }
-
-
-
-
-
-
-

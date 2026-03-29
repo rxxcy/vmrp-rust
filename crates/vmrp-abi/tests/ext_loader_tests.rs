@@ -56,12 +56,8 @@ fn real_ext_entry_words_match_observed_sequence() {
     let ext = ExtFile::from_path(real_ext_path()).unwrap();
     let words = ext.entry_words(6).unwrap();
 
-    assert_eq!(words, vec![
-        0xE92D4038,
-        0xE59F410C,
-        0xE08F4004,
-        0xE5141008,
-        0xE3500001,
-        0xE5912064,
-    ]);
+    assert_eq!(
+        words,
+        vec![0xE92D4038, 0xE59F410C, 0xE08F4004, 0xE5141008, 0xE3500001, 0xE5912064,]
+    );
 }

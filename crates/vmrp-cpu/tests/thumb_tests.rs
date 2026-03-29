@@ -66,7 +66,9 @@ fn thumb_ldrb_register_offset_loads_byte() {
     let mut cpu = new_thumb_cpu(0x5C5B);
     cpu.regs_mut().set_reg(3, 0x80080);
     cpu.regs_mut().set_reg(1, 2);
-    cpu.memory_mut().write8(GuestAddr::new(0x80082), 0xAB).unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x80082), 0xAB)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -78,7 +80,9 @@ fn thumb_ldrb_register_offset_loads_byte() {
 fn thumb_ldrb_immediate_loads_byte() {
     let mut cpu = new_thumb_cpu(0x7C18);
     cpu.regs_mut().set_reg(3, 0x80080);
-    cpu.memory_mut().write8(GuestAddr::new(0x80090), 0xCD).unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x80090), 0xCD)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -94,7 +98,10 @@ fn thumb_stmia_stores_registers_and_writes_back_base() {
 
     cpu.step().unwrap();
 
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x80080)).unwrap(), 0x1234_5678);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x80080)).unwrap(),
+        0x1234_5678
+    );
     assert_eq!(cpu.regs().reg(0), 0x80084);
     assert_eq!(cpu.regs().pc(), 0x80002);
 }
@@ -107,7 +114,10 @@ fn thumb_str_sp_relative_stores_word() {
 
     cpu.step().unwrap();
 
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x80088)).unwrap(), 0xCAFE_BABE);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x80088)).unwrap(),
+        0xCAFE_BABE
+    );
     assert_eq!(cpu.regs().pc(), 0x80002);
 }
 
@@ -125,7 +135,9 @@ fn thumb_adr_uses_aligned_pc_base() {
 fn thumb_ldr_sp_relative_loads_word() {
     let mut cpu = new_thumb_cpu(0x9904);
     cpu.regs_mut().set_sp(0x80080);
-    cpu.memory_mut().write32(GuestAddr::new(0x80090), 0x0BAD_F00D).unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80090), 0x0BAD_F00D)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -149,8 +161,12 @@ fn thumb_blx_register_aligns_arm_target_to_word_boundary() {
 fn thumb_pop_with_pc_restores_register_and_returns() {
     let mut cpu = new_thumb_cpu(0xBD10);
     cpu.regs_mut().set_sp(0x80080);
-    cpu.memory_mut().write32(GuestAddr::new(0x80080), 0x1111_2222).unwrap();
-    cpu.memory_mut().write32(GuestAddr::new(0x80084), 0x80021).unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80080), 0x1111_2222)
+        .unwrap();
+    cpu.memory_mut()
+        .write32(GuestAddr::new(0x80084), 0x80021)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -159,9 +175,3 @@ fn thumb_pop_with_pc_restores_register_and_returns() {
     assert_eq!(cpu.regs().pc(), 0x80020);
     assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Thumb);
 }
-
-
-
-
-
-

@@ -83,7 +83,6 @@ fn runtime_stage_runner_reports_budget_exhaustion() {
     assert_eq!(stage.stop_reason, "step budget exhausted");
 }
 
-
 #[test]
 fn runtime_reports_remaining_time_for_pending_timer() {
     let mut runtime = Runtime::new();

@@ -192,10 +192,26 @@ impl MrpFile {
 
     pub fn runtime_assets(&self) -> Result<MrpRuntimeAssets, MrpDecodeError> {
         let ext_bytes = self.file_bytes_inflated(CFUNCTION_EXT_NAME)?;
-        let cfunction_ext = ExtFile::from_bytes(&ext_bytes).map_err(|_| MrpDecodeError::InvalidExtFormat)?;
+        let cfunction_ext =
+            ExtFile::from_bytes(&ext_bytes).map_err(|_| MrpDecodeError::InvalidExtFormat)?;
+        self.runtime_assets_with_ext(cfunction_ext)
+    }
 
-        let start_mr = if self.entry(START_MR_NAME).is_some() {
-            self.file_bytes_inflated(START_MR_NAME)?
+    pub fn runtime_assets_with_ext(
+        &self,
+        cfunction_ext: ExtFile,
+    ) -> Result<MrpRuntimeAssets, MrpDecodeError> {
+        let start_mr = self.load_start_mr()?;
+
+        Ok(MrpRuntimeAssets {
+            cfunction_ext,
+            start_mr,
+        })
+    }
+
+    fn load_start_mr(&self) -> Result<Vec<u8>, MrpDecodeError> {
+        if self.entry(START_MR_NAME).is_some() {
+            self.file_bytes_inflated(START_MR_NAME)
         } else {
             let fallback_name = self
                 .entries()
@@ -203,13 +219,8 @@ impl MrpFile {
                 .find(|entry| entry.name().ends_with(".mr"))
                 .map(|entry| entry.name().to_string())
                 .ok_or(MrpDecodeError::NotFound)?;
-            self.file_bytes_inflated(&fallback_name)?
-        };
-
-        Ok(MrpRuntimeAssets {
-            cfunction_ext,
-            start_mr,
-        })
+            self.file_bytes_inflated(&fallback_name)
+        }
     }
 }
 
@@ -273,6 +284,9 @@ fn read_u32_at(bytes: &[u8], offset: usize) -> Result<u32, MrpLoadError> {
 }
 
 fn parse_c_string(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|value| *value == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).to_string()
 }

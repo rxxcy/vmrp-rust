@@ -1,12 +1,16 @@
+mod presenter;
+
+use presenter::{DirtyRect, WindowPresenter};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use vmrp_abi::{MrChunk, MrpFile};
+use vmrp_abi::{ExtFile, MrChunk, MrpDecodeError, MrpFile, MrpRuntimeAssets};
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
 use vmrp_platform::{
-    ExtBootstrap, ExtHost, HostTimerCommand, FLAG_USE_UTF8_EDIT, MR_FAILED, VMRP_VER,
+    ExtBootstrap, ExtHost, HostScreenRegion, HostTimerCommand, FLAG_USE_UTF8_EDIT, MR_FAILED,
+    VMRP_VER,
 };
 use vmrp_runtime::{Runtime, RuntimeEvent, RuntimeStepResult, StageResult};
 
@@ -17,10 +21,14 @@ const DSM_INIT_CODE: i32 = -100;
 const MR_START_DSM_CODE: i32 = -99;
 const MR_TIMER_CODE: i32 = -96;
 const MR_EVENT_CODE: i32 = -95;
+const WINDOW_TITLE: &str = "vmrp-rust";
+const SCREEN_WIDTH: usize = 240;
+const SCREEN_HEIGHT: usize = 320;
 
 #[derive(Debug, Clone)]
 struct RunnerConfig {
     mrp_path: String,
+    window: bool,
     verbose: bool,
     step_limit: usize,
     trace_limit: usize,
@@ -96,10 +104,7 @@ fn main() {
         }
     } else if !report.run_ok {
         for stage in &report.stages {
-            println!(
-                "stage={} stop_reason={}",
-                stage.label, stage.stop_reason
-            );
+            println!("stage={} stop_reason={}", stage.label, stage.stop_reason);
         }
     }
 
@@ -108,22 +113,38 @@ fn main() {
 }
 
 fn usage() -> &'static str {
-    "Usage: vmrp-windows [--verbose|-v] [--step-limit N] [--trace-limit N] [<path-to.mrp>]"
+    "Usage: vmrp-windows [--window] [--verbose|-v] [--step-limit N] [--trace-limit N] [<path-to.mrp>]"
 }
 
 fn parse_args() -> Result<ParseOutcome, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I, S>(args: I) -> Result<ParseOutcome, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut mrp_path: Option<String> = None;
+    let mut window = false;
     let mut verbose = false;
     let mut step_limit = 4000usize;
     let mut trace_limit = 200usize;
 
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = args
+        .into_iter()
+        .map(|value| value.as_ref().to_string())
+        .collect::<Vec<_>>();
     let mut index = 0usize;
 
     while index < args.len() {
         let arg = &args[index];
         match arg.as_str() {
             "--help" | "-h" => return Ok(ParseOutcome::Help),
+            "--window" => {
+                window = true;
+                index += 1;
+            }
             "--verbose" | "-v" => {
                 verbose = true;
                 index += 1;
@@ -161,18 +182,47 @@ fn parse_args() -> Result<ParseOutcome, String> {
 
     Ok(ParseOutcome::Config(RunnerConfig {
         mrp_path: mrp_path.unwrap_or_else(|| String::from(DEFAULT_MRP_PATH)),
+        window,
         verbose,
         step_limit,
         trace_limit,
     }))
 }
 
+fn helper_ext_search_paths(mrp_path: &str) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    let path = Path::new(mrp_path);
+    for ancestor in path.ancestors().skip(1) {
+        paths.push(ancestor.join("cfunction.ext"));
+    }
+    paths
+}
+
+fn load_runtime_assets(mrp: &MrpFile, mrp_path: &str) -> Result<MrpRuntimeAssets, String> {
+    match mrp.runtime_assets() {
+        Ok(assets) => Ok(assets),
+        Err(MrpDecodeError::NotFound) => {
+            for candidate in helper_ext_search_paths(mrp_path) {
+                if !candidate.is_file() {
+                    continue;
+                }
+                let ext = ExtFile::from_path(&candidate)
+                    .map_err(|err| format!("load fallback helper failed at {}: {err:?}", candidate.display()))?;
+                return mrp
+                    .runtime_assets_with_ext(ext)
+                    .map_err(|err| format!("build runtime assets with fallback helper failed: {err:?}"));
+            }
+            Err(String::from("NotFound"))
+        }
+        Err(err) => Err(format!("{err:?}")),
+    }
+}
+
 fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
-    let mrp = MrpFile::from_path(&config.mrp_path)
-        .map_err(|err| format!("read mrp failed: {err:?}"))?;
-    let assets = mrp
-        .runtime_assets()
-        .map_err(|err| format!("decode runtime assets failed: {err:?}"))?;
+    let mrp =
+        MrpFile::from_path(&config.mrp_path).map_err(|err| format!("read mrp failed: {err:?}"))?;
+    let assets = load_runtime_assets(&mrp, &config.mrp_path)
+        .map_err(|err| format!("decode runtime assets failed: {err}"))?;
     let ext = assets.cfunction_ext().clone();
     let start_mr = assets.start_mr();
 
@@ -197,10 +247,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         match MrChunk::from_bytes(start_mr) {
             Ok(chunk) => {
                 println!("start_mr_chunk_version=0x{:02X}", chunk.header().version());
-                println!(
-                    "start_mr_main_code_count={}",
-                    chunk.main().code_count()
-                );
+                println!("start_mr_main_code_count={}", chunk.main().code_count());
             }
             Err(err) => {
                 println!("start_mr_chunk_parse_error={err:?}");
@@ -277,6 +324,14 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
 
     let mut runtime = Runtime::new();
     let mut stages = Vec::new();
+    let mut presenter = if config.window {
+        Some(
+            WindowPresenter::new(WINDOW_TITLE, SCREEN_WIDTH, SCREEN_HEIGHT)
+                .map_err(|err| format!("create window presenter failed: {err}"))?,
+        )
+    } else {
+        None
+    };
 
     let stage_ext_init = run_loop(
         &mut runtime,
@@ -286,6 +341,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         config.trace_limit,
         "ext_init",
         config.verbose,
+        &mut presenter,
     );
     stages.push(stage_ext_init);
 
@@ -298,13 +354,14 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     if let Some(helper) = helper {
         setup_helper_call(&mut cpu, helper, host.c_function_p_addr(), 0, 0, 0);
         let stage_helper_init = run_loop(
-        &mut runtime,
-        &mut cpu,
+            &mut runtime,
+            &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
             "helper_init",
             config.verbose,
+            &mut presenter,
         );
         stages.push(stage_helper_init);
 
@@ -316,8 +373,9 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         )
         .map_err(|err| format!("install DSM_REQUIRE_FUNCS failed: {err:?}"))?;
 
-        let dsm_init_event_addr = write_event(cpu.memory_mut(), DSM_INIT_CODE, dsm_require_funcs_addr, 0)
-            .map_err(|err| format!("write DSM_INIT event failed: {err:?}"))?;
+        let dsm_init_event_addr =
+            write_event(cpu.memory_mut(), DSM_INIT_CODE, dsm_require_funcs_addr, 0)
+                .map_err(|err| format!("write DSM_INIT event failed: {err:?}"))?;
         setup_helper_call(
             &mut cpu,
             helper,
@@ -327,13 +385,14 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             12,
         );
         let stage_dsm_init = run_loop(
-        &mut runtime,
-        &mut cpu,
+            &mut runtime,
+            &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
             "dsm_init",
             config.verbose,
+            &mut presenter,
         );
         dsm_init_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_dsm_init);
@@ -351,13 +410,14 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             12,
         );
         let stage_start_dsm = run_loop(
-        &mut runtime,
-        &mut cpu,
+            &mut runtime,
+            &mut cpu,
             &mut host,
             config.step_limit,
             config.trace_limit,
             "start_dsm",
             config.verbose,
+            &mut presenter,
         );
         start_dsm_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_start_dsm);
@@ -368,6 +428,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             &mut host,
             helper,
             config,
+            &mut presenter,
             &mut stages,
         )?;
     }
@@ -402,10 +463,15 @@ fn run_loop(
     trace_limit: usize,
     label: &'static str,
     verbose: bool,
+    presenter: &mut Option<WindowPresenter>,
 ) -> StageResult {
     let mut observed = 0usize;
 
     Runtime::run_stage(label, step_limit, || {
+        if let Err(err) = drain_host_ui(runtime, host, presenter) {
+            return RuntimeStepResult::Stop(err);
+        }
+
         if let Some(command) = host.take_timer_command() {
             match command {
                 HostTimerCommand::Start(delay) => runtime.start_timer(delay),
@@ -428,6 +494,9 @@ fn run_loop(
                 observed += 1;
                 if verbose && observed <= trace_limit {
                     println!("{label}_host_step[{observed}]=0x{:08X}", cpu.regs().pc());
+                }
+                if let Err(err) = drain_host_ui(runtime, host, presenter) {
+                    return RuntimeStepResult::Stop(err);
                 }
                 return RuntimeStepResult::HostStep;
             }
@@ -454,6 +523,57 @@ fn run_loop(
     })
 }
 
+fn drain_host_ui(
+    runtime: &mut Runtime,
+    host: &mut ExtHost,
+    presenter: &mut Option<WindowPresenter>,
+) -> Result<(), String> {
+    if let Some(region) = host.take_dirty_region() {
+        if let Some(presenter) = presenter.as_mut() {
+            presenter
+                .present(host.screen_buffer(), to_presenter_rect(region))
+                .map_err(|err| format!("present frame failed: {err}"))?;
+            drain_presenter_events(runtime, presenter);
+        }
+    } else if let Some(presenter) = presenter.as_mut() {
+        presenter.pump();
+        drain_presenter_events(runtime, presenter);
+    }
+
+    Ok(())
+}
+
+fn drain_presenter_events(runtime: &mut Runtime, presenter: &mut WindowPresenter) {
+    for event in presenter.take_guest_events() {
+        runtime.push_event(RuntimeEvent::GuestEvent {
+            code: event.code,
+            p0: event.p0,
+            p1: event.p1,
+        });
+    }
+}
+
+fn should_keep_waiting_for_host_events(
+    presenter_active: bool,
+    next_timer_ms: Option<u32>,
+    idle_polls: usize,
+    step_limit: usize,
+) -> bool {
+    if next_timer_ms.is_some() {
+        idle_polls < step_limit
+    } else {
+        presenter_active
+    }
+}
+
+fn to_presenter_rect(region: HostScreenRegion) -> DirtyRect {
+    DirtyRect {
+        x: region.x,
+        y: region.y,
+        w: region.w,
+        h: region.h,
+    }
+}
 
 fn drive_runtime_events(
     runtime: &mut Runtime,
@@ -461,11 +581,13 @@ fn drive_runtime_events(
     host: &mut ExtHost,
     helper: GuestAddr,
     config: &RunnerConfig,
+    presenter: &mut Option<WindowPresenter>,
     stages: &mut Vec<StageResult>,
 ) -> Result<(), String> {
     let mut idle_polls = 0usize;
 
     loop {
+        drain_host_ui(runtime, host, presenter)?;
         runtime.sync_wall_clock();
         runtime.poll_timers();
 
@@ -493,22 +615,17 @@ fn drive_runtime_events(
                         config.trace_limit,
                         "timer",
                         config.verbose,
+                        presenter,
                     );
                     stages.push(stage_timer);
                 }
                 RuntimeEvent::GuestEvent { code, p0, p1 } => {
                     let event_payload_addr = write_event(cpu.memory_mut(), code, p0, p1)
                         .map_err(|err| format!("write MR_EVENT payload failed: {err:?}"))?;
-                    let event_addr = write_event(cpu.memory_mut(), MR_EVENT_CODE, event_payload_addr, 0)
-                        .map_err(|err| format!("write MR_EVENT event failed: {err:?}"))?;
-                    setup_helper_call(
-                        cpu,
-                        helper,
-                        host.c_function_p_addr(),
-                        1,
-                        event_addr,
-                        12,
-                    );
+                    let event_addr =
+                        write_event(cpu.memory_mut(), MR_EVENT_CODE, event_payload_addr, 0)
+                            .map_err(|err| format!("write MR_EVENT event failed: {err:?}"))?;
+                    setup_helper_call(cpu, helper, host.c_function_p_addr(), 1, event_addr, 12);
                     let stage_event = run_loop(
                         runtime,
                         cpu,
@@ -517,6 +634,7 @@ fn drive_runtime_events(
                         config.trace_limit,
                         "event",
                         config.verbose,
+                        presenter,
                     );
                     stages.push(stage_event);
                 }
@@ -528,17 +646,27 @@ fn drive_runtime_events(
             continue;
         }
 
-        match runtime.time_until_next_timer_ms() {
-            Some(remaining) => {
-                if idle_polls >= config.step_limit {
-                    break;
-                }
-                let sleep_ms = remaining.clamp(1, 10) as u64;
-                thread::sleep(Duration::from_millis(sleep_ms));
-                idle_polls += 1;
-            }
-            None => break,
+        let next_timer_ms = runtime.time_until_next_timer_ms();
+        let presenter_active = presenter
+            .as_ref()
+            .map(|presenter| presenter.should_stay_open())
+            .unwrap_or(false);
+        if !should_keep_waiting_for_host_events(
+            presenter_active,
+            next_timer_ms,
+            idle_polls,
+            config.step_limit,
+        ) {
+            break;
         }
+
+        if let Some(presenter) = presenter.as_mut() {
+            presenter.pump();
+            drain_presenter_events(runtime, presenter);
+        }
+        let sleep_ms = next_timer_ms.unwrap_or(10).clamp(1, 10) as u64;
+        thread::sleep(Duration::from_millis(sleep_ms));
+        idle_polls += 1;
     }
 
     Ok(())
@@ -620,9 +748,69 @@ fn write_c_string(
     Ok(start)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        helper_ext_search_paths, parse_args_from, should_keep_waiting_for_host_events,
+        to_presenter_rect, ParseOutcome,
+    };
+    use crate::presenter::DirtyRect;
+    use vmrp_platform::HostScreenRegion;
 
+    #[test]
+    fn parse_args_enables_window_mode() {
+        let parse = parse_args_from(["--window", "demo.mrp"]);
 
+        match parse.expect("parse should succeed") {
+            ParseOutcome::Config(config) => {
+                assert!(config.window);
+                assert_eq!(config.mrp_path, "demo.mrp");
+            }
+            ParseOutcome::Help => panic!("expected config outcome"),
+        }
+    }
 
+    #[test]
+    fn converts_host_dirty_region_to_presenter_rect() {
+        let rect = to_presenter_rect(HostScreenRegion {
+            x: -3,
+            y: 4,
+            w: 5,
+            h: 6,
+        });
 
+        assert_eq!(
+            rect,
+            DirtyRect {
+                x: -3,
+                y: 4,
+                w: 5,
+                h: 6,
+            }
+        );
+    }
 
+    #[test]
+    fn window_idle_policy_waits_for_input_after_first_frame() {
+        assert!(should_keep_waiting_for_host_events(true, None, 0, 4000));
+        assert!(!should_keep_waiting_for_host_events(false, None, 0, 4000));
+        assert!(should_keep_waiting_for_host_events(false, Some(10), 0, 4000));
+        assert!(!should_keep_waiting_for_host_events(false, Some(10), 4000, 4000));
+    }
 
+    #[test]
+    fn helper_search_checks_parent_directories() {
+        let paths = helper_ext_search_paths(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\ydqtwo.mrp");
+        let rendered = paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(rendered.contains(&String::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\cfunction.ext"
+        )));
+        assert!(rendered.contains(&String::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\cfunction.ext"
+        )));
+    }
+}

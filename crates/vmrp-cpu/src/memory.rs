@@ -55,7 +55,10 @@ impl MemoryBus for TestMemory {
 
     fn read16(&self, addr: GuestAddr) -> Result<u16, MemoryAccessError> {
         let offset = self.offset_for(addr, 2)?;
-        Ok(u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]]))
+        Ok(u16::from_le_bytes([
+            self.bytes[offset],
+            self.bytes[offset + 1],
+        ]))
     }
 
     fn read32(&self, addr: GuestAddr) -> Result<u32, MemoryAccessError> {

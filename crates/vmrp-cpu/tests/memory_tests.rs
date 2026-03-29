@@ -1,5 +1,5 @@
 use vmrp_core::GuestAddr;
-use vmrp_cpu::{MemoryBus, MemoryAccessError, TestMemory};
+use vmrp_cpu::{MemoryAccessError, MemoryBus, TestMemory};
 
 #[test]
 fn reads_and_writes_u32_little_endian_values() {

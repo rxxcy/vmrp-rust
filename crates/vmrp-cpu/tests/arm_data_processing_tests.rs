@@ -22,6 +22,16 @@ fn mov_immediate_updates_destination_register() {
 }
 
 #[test]
+fn mvn_immediate_writes_inverted_immediate() {
+    let mut cpu = new_arm_cpu(0xE3E0_0000);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(0), 0xFFFF_FFFF);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
 fn mov_register_updates_destination_register() {
     let mut cpu = new_arm_cpu(0xE1A0_4000);
     cpu.regs_mut().set_reg(0, 0x1234_5678);
@@ -119,3 +129,32 @@ fn and_immediate_masks_bits() {
     assert_eq!(cpu.regs().reg(3), 0x34);
     assert_eq!(cpu.regs().pc(), 0x80004);
 }
+
+#[test]
+fn bic_immediate_clears_masked_bits() {
+    let mut cpu = new_arm_cpu(0xE3C4_4010);
+    cpu.regs_mut().set_reg(4, 0xFFFF_FFFF);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(4), 0xFFFF_FFEF);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
+fn cmp_register_updates_flags_without_writing_result_register() {
+    let mut cpu = new_arm_cpu(0xE152_0003);
+    cpu.regs_mut().set_reg(0, 0xDEAD_BEEF);
+    cpu.regs_mut().set_reg(2, 5);
+    cpu.regs_mut().set_reg(3, 5);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(0), 0xDEAD_BEEF);
+    assert!(cpu.regs().cpsr().zero());
+    assert!(cpu.regs().cpsr().carry());
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+
+

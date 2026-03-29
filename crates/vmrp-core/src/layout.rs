@@ -35,7 +35,11 @@ pub struct AddressSpaceLayout {
 }
 
 impl AddressSpaceLayout {
-    pub const fn new(code: MemoryRegion, stack: MemoryRegion, memory_manager: MemoryRegion) -> Self {
+    pub const fn new(
+        code: MemoryRegion,
+        stack: MemoryRegion,
+        memory_manager: MemoryRegion,
+    ) -> Self {
         Self {
             code,
             stack,

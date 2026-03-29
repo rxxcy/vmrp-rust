@@ -1,7 +1,7 @@
 use vmrp_core::GuestAddr;
 
-use crate::{CpuRegs, ExecutionMode, MemoryBus};
 use crate::MemoryAccessError;
+use crate::{CpuRegs, ExecutionMode, MemoryBus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FetchedOpcode {
@@ -10,7 +10,10 @@ pub struct FetchedOpcode {
     pub opcode: u32,
 }
 
-pub fn fetch_opcode<B: MemoryBus>(memory: &B, regs: &CpuRegs) -> Result<FetchedOpcode, MemoryAccessError> {
+pub fn fetch_opcode<B: MemoryBus>(
+    memory: &B,
+    regs: &CpuRegs,
+) -> Result<FetchedOpcode, MemoryAccessError> {
     let pc = regs.pc();
     let mode = regs.execution_mode();
     let opcode = match mode {

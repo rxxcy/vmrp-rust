@@ -28,6 +28,8 @@ pub enum DataProcessingOp {
     Sub,
     Cmp,
     Cmn,
+    Mvn,
+    Bic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,9 +109,21 @@ pub enum DecodedInstruction {
     },
     SingleDataTransferImmediate {
         load: bool,
+        byte: bool,
         base: usize,
         rd: usize,
         offset: u32,
+        add_offset: bool,
+        pre_index: bool,
+        write_back: bool,
+    },
+    SingleDataTransferRegister {
+        load: bool,
+        byte: bool,
+        base: usize,
+        rd: usize,
+        rm: usize,
+        shift: RegisterShift,
         add_offset: bool,
         pre_index: bool,
         write_back: bool,
@@ -215,7 +229,9 @@ pub enum DecodedInstruction {
         rd: usize,
         immediate: u32,
     },
-    Unknown { opcode: u32 },
+    Unknown {
+        opcode: u32,
+    },
 }
 
 pub fn decode_arm_opcode(opcode: u32) -> DecodedInstruction {
@@ -231,8 +247,6 @@ pub fn decode_opcode(mode: ExecutionMode, opcode: u32) -> DecodedInstruction {
 
 pub mod arm;
 pub mod thumb;
-
-
 
 
 

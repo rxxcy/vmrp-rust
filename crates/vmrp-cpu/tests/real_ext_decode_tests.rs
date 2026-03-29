@@ -1,6 +1,4 @@
-use vmrp_cpu::{
-    decode_arm_opcode, Condition, DataProcessingOp, DecodedInstruction, RegisterShift,
-};
+use vmrp_cpu::{decode_arm_opcode, Condition, DataProcessingOp, DecodedInstruction, RegisterShift};
 
 #[test]
 fn public_decode_api_recognizes_real_ext_push_opcode() {
@@ -28,6 +26,7 @@ fn decodes_real_ext_literal_load_and_register_add() {
         ldr_literal,
         DecodedInstruction::SingleDataTransferImmediate {
             load: true,
+            byte: false,
             base: 15,
             rd: 4,
             offset: 0x10C,
@@ -62,6 +61,7 @@ fn decodes_real_ext_memory_branch_and_blx_forms() {
         ldr_offset,
         DecodedInstruction::SingleDataTransferImmediate {
             load: true,
+            byte: false,
             base: 4,
             rd: 1,
             offset: 8,
@@ -176,3 +176,56 @@ fn decodes_real_ext_smull() {
         }
     ));
 }
+
+#[test]
+fn decodes_real_ext_cmp_register_form() {
+    let cmp_register = decode_arm_opcode(0xE1520003);
+
+    assert!(matches!(
+        cmp_register,
+        DecodedInstruction::DataProcessingRegister {
+            op: DataProcessingOp::Cmp,
+            set_flags: true,
+            rn: 2,
+            rd: 0,
+            rm: 3,
+            shift: RegisterShift::Lsl(0),
+        }
+    ));
+}
+#[test]
+fn decodes_real_ext_byte_store_forms() {
+    let strb_post = decode_arm_opcode(0xE4C13001);
+    let strb_reg = decode_arm_opcode(0x37C10002);
+
+    assert!(matches!(
+        strb_post,
+        DecodedInstruction::SingleDataTransferImmediate {
+            load: false,
+            byte: true,
+            base: 1,
+            rd: 3,
+            offset: 1,
+            add_offset: true,
+            pre_index: false,
+            write_back: false,
+        }
+    ));
+
+    assert!(matches!(
+        strb_reg,
+        DecodedInstruction::SingleDataTransferRegister {
+            load: false,
+            byte: true,
+            base: 1,
+            rd: 0,
+            rm: 2,
+            shift: RegisterShift::Lsl(0),
+            add_offset: true,
+            pre_index: true,
+            write_back: false,
+        }
+    ));
+}
+
+
