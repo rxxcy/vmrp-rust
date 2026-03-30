@@ -170,6 +170,11 @@ fn decode_alu_register(opcode: u16) -> DecodedInstruction {
             rd,
             rs,
         },
+        0xC => DecodedInstruction::ThumbAluRegister {
+            op: ThumbAluOp::Orr,
+            rd,
+            rs,
+        },
         0xF => DecodedInstruction::ThumbAluRegister {
             op: ThumbAluOp::Mvn,
             rd,

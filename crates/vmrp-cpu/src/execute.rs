@@ -195,7 +195,8 @@ pub fn execute_instruction<B: MemoryBus>(
             } else {
                 regs.reg(rm)
             };
-            let (right, shifter_carry) = apply_register_shift(rm_value, shift, regs.cpsr().carry(), regs);
+            let (right, shifter_carry) =
+                apply_register_shift(rm_value, shift, regs.cpsr().carry(), regs);
 
             match op {
                 DataProcessingOp::And => {
@@ -230,7 +231,7 @@ pub fn execute_instruction<B: MemoryBus>(
                         }
                     }
                 }
-            DataProcessingOp::Tst => {
+                DataProcessingOp::Tst => {
                     let result = left & right;
                     regs.cpsr_mut().update_nz(result);
                     if let Some(carry) = shifter_carry {
@@ -289,7 +290,8 @@ pub fn execute_instruction<B: MemoryBus>(
                     }
                 }
                 DataProcessingOp::Adc => {
-                    let (result, carry, overflow) = add_with_carry(left, right, regs.cpsr().carry());
+                    let (result, carry, overflow) =
+                        add_with_carry(left, right, regs.cpsr().carry());
                     write_result_and_advance(
                         regs,
                         rd,
@@ -397,13 +399,7 @@ pub fn execute_instruction<B: MemoryBus>(
                 result = result.wrapping_add(regs.reg(rn));
             }
 
-            write_result_and_advance(
-                regs,
-                rd,
-                result,
-                pc.wrapping_add(4),
-                &mut register_writes,
-            );
+            write_result_and_advance(regs, rd, result, pc.wrapping_add(4), &mut register_writes);
 
             if set_flags {
                 regs.cpsr_mut().update_nz(result);
@@ -609,187 +605,188 @@ pub fn execute_instruction<B: MemoryBus>(
         } => {
             let immediate_carry = arm_immediate_carry(opcode, regs.cpsr().carry());
             match op {
-            DataProcessingOp::Mov => {
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    immediate,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(immediate);
-                    regs.cpsr_mut().set_carry(immediate_carry);
+                DataProcessingOp::Mov => {
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        immediate,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(immediate);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
                 }
-            }
-            DataProcessingOp::Mvn => {
-                let result = !immediate;
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
+                DataProcessingOp::Mvn => {
+                    let result = !immediate;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
+                }
+                DataProcessingOp::And => {
+                    let left = regs.reg(rn);
+                    let result = left & immediate;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
+                }
+                DataProcessingOp::Eor => {
+                    let left = regs.reg(rn);
+                    let result = left ^ immediate;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
+                }
+                DataProcessingOp::Tst => {
+                    let left = regs.reg(rn);
+                    let result = left & immediate;
                     regs.cpsr_mut().update_nz(result);
                     regs.cpsr_mut().set_carry(immediate_carry);
+                    let next_pc = pc.wrapping_add(4);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite {
+                        index: 15,
+                        value: next_pc,
+                    });
                 }
-            }
-            DataProcessingOp::And => {
-                let left = regs.reg(rn);
-                let result = left & immediate;
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(result);
-                    regs.cpsr_mut().set_carry(immediate_carry);
+                DataProcessingOp::Orr => {
+                    let left = regs.reg(rn);
+                    let result = left | immediate;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
                 }
-            }
-            DataProcessingOp::Eor => {
-                let left = regs.reg(rn);
-                let result = left ^ immediate;
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(result);
-                    regs.cpsr_mut().set_carry(immediate_carry);
+                DataProcessingOp::Bic => {
+                    let left = regs.reg(rn);
+                    let result = left & !immediate;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(immediate_carry);
+                    }
                 }
-            }
-            DataProcessingOp::Tst => {
-                let left = regs.reg(rn);
-                let result = left & immediate;
-                regs.cpsr_mut().update_nz(result);
-                regs.cpsr_mut().set_carry(immediate_carry);
-                let next_pc = pc.wrapping_add(4);
-                regs.set_pc(next_pc);
-                register_writes.push(RegisterWrite {
-                    index: 15,
-                    value: next_pc,
-                });
-            }
-            DataProcessingOp::Orr => {
-                let left = regs.reg(rn);
-                let result = left | immediate;
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(result);
-                    regs.cpsr_mut().set_carry(immediate_carry);
+                DataProcessingOp::Add => {
+                    let left = regs.reg(rn);
+                    let result = left.wrapping_add(immediate);
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nzcv_add(left, immediate, result);
+                    }
                 }
-            }
-            DataProcessingOp::Bic => {
-                let left = regs.reg(rn);
-                let result = left & !immediate;
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(result);
-                    regs.cpsr_mut().set_carry(immediate_carry);
+                DataProcessingOp::Adc => {
+                    let left = regs.reg(rn);
+                    let (result, carry, overflow) =
+                        add_with_carry(left, immediate, regs.cpsr().carry());
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(carry);
+                        regs.cpsr_mut().set_overflow(overflow);
+                    }
                 }
-            }
-            DataProcessingOp::Add => {
-                let left = regs.reg(rn);
-                let result = left.wrapping_add(immediate);
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nzcv_add(left, immediate, result);
+                DataProcessingOp::Sub => {
+                    let left = regs.reg(rn);
+                    let result = left.wrapping_sub(immediate);
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
+                    }
                 }
-            }
-            DataProcessingOp::Adc => {
-                let left = regs.reg(rn);
-                let (result, carry, overflow) = add_with_carry(left, immediate, regs.cpsr().carry());
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nz(result);
-                    regs.cpsr_mut().set_carry(carry);
-                    regs.cpsr_mut().set_overflow(overflow);
+                DataProcessingOp::Rsb => {
+                    let left = regs.reg(rn);
+                    let result = immediate.wrapping_sub(left);
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nzcv_sub(immediate, left, result);
+                    }
                 }
-            }
-            DataProcessingOp::Sub => {
-                let left = regs.reg(rn);
-                let result = left.wrapping_sub(immediate);
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
+                DataProcessingOp::Cmp => {
+                    let left = regs.reg(rn);
+                    let result = left.wrapping_sub(immediate);
                     regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
+                    let next_pc = pc.wrapping_add(4);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite {
+                        index: 15,
+                        value: next_pc,
+                    });
                 }
-            }
-            DataProcessingOp::Rsb => {
-                let left = regs.reg(rn);
-                let result = immediate.wrapping_sub(left);
-                write_result_and_advance(
-                    regs,
-                    rd,
-                    result,
-                    pc.wrapping_add(4),
-                    &mut register_writes,
-                );
-                if set_flags {
-                    regs.cpsr_mut().update_nzcv_sub(immediate, left, result);
+                DataProcessingOp::Cmn => {
+                    let left = regs.reg(rn);
+                    let result = left.wrapping_add(immediate);
+                    regs.cpsr_mut().update_nzcv_add(left, immediate, result);
+                    let next_pc = pc.wrapping_add(4);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite {
+                        index: 15,
+                        value: next_pc,
+                    });
                 }
-            }
-            DataProcessingOp::Cmp => {
-                let left = regs.reg(rn);
-                let result = left.wrapping_sub(immediate);
-                regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
-                let next_pc = pc.wrapping_add(4);
-                regs.set_pc(next_pc);
-                register_writes.push(RegisterWrite {
-                    index: 15,
-                    value: next_pc,
-                });
-            }
-            DataProcessingOp::Cmn => {
-                let left = regs.reg(rn);
-                let result = left.wrapping_add(immediate);
-                regs.cpsr_mut().update_nzcv_add(left, immediate, result);
-                let next_pc = pc.wrapping_add(4);
-                regs.set_pc(next_pc);
-                register_writes.push(RegisterWrite {
-                    index: 15,
-                    value: next_pc,
-                });
             }
         }
-        },
         DecodedInstruction::ThumbAddSub {
             sub,
             rd,
@@ -853,6 +850,15 @@ pub fn execute_instruction<B: MemoryBus>(
                     let result = left.wrapping_sub(right);
                     regs.cpsr_mut().update_nzcv_sub(left, right, result);
                 }
+                ThumbAluOp::Orr => {
+                    let result = left | right;
+                    regs.set_reg(rd, result);
+                    register_writes.push(RegisterWrite {
+                        index: rd,
+                        value: result,
+                    });
+                    regs.cpsr_mut().update_nz(result);
+                }
                 ThumbAluOp::Mvn => {
                     let result = !right;
                     regs.set_reg(rd, result);
@@ -872,7 +878,8 @@ pub fn execute_instruction<B: MemoryBus>(
         }
         DecodedInstruction::ThumbShiftImmediate { rd, rs, shift } => {
             let value = regs.reg(rs);
-            let (result, shifter_carry) = apply_register_shift(value, shift, regs.cpsr().carry(), regs);
+            let (result, shifter_carry) =
+                apply_register_shift(value, shift, regs.cpsr().carry(), regs);
             regs.set_reg(rd, result);
             register_writes.push(RegisterWrite {
                 index: rd,
@@ -1535,11 +1542,7 @@ fn read_arm_word<B: MemoryBus>(memory: &B, address: u32) -> Result<u32, CpuError
     })
 }
 
-fn write_arm_word<B: MemoryBus>(
-    memory: &mut B,
-    address: u32,
-    value: u32,
-) -> Result<(), CpuError> {
+fn write_arm_word<B: MemoryBus>(memory: &mut B, address: u32, value: u32) -> Result<(), CpuError> {
     let aligned = address & !3;
     memory.write32(GuestAddr::new(aligned), value)?;
     Ok(())
@@ -1701,25 +1704,11 @@ fn arm_condition_passed(cpsr: Cpsr, cond: u8) -> bool {
 }
 
 fn thumb_condition_passed(cpsr: Cpsr, condition: Condition) -> bool {
-    match condition {
-        Condition::Eq => cpsr.zero(),
-        Condition::Ne => !cpsr.zero(),
-        Condition::Al => true,
-        Condition::Other(_) => false,
-    }
+    let cond = match condition {
+        Condition::Eq => 0x0,
+        Condition::Ne => 0x1,
+        Condition::Al => 0xE,
+        Condition::Other(bits) => bits,
+    };
+    arm_condition_passed(cpsr, cond)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

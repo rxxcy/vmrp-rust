@@ -57,6 +57,7 @@ pub enum ThumbOperand {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThumbAluOp {
     Cmp,
+    Orr,
     Mvn,
 }
 
@@ -285,14 +286,3 @@ pub fn decode_opcode(mode: ExecutionMode, opcode: u32) -> DecodedInstruction {
 
 pub mod arm;
 pub mod thumb;
-
-
-
-
-
-
-
-
-
-
-

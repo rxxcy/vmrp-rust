@@ -63,7 +63,6 @@ fn decode_halfword_transfer(opcode: u32) -> DecodedInstruction {
     }
 }
 
-
 pub fn decode(opcode: u32) -> DecodedInstruction {
     if opcode & BX_MASK == BX_VALUE {
         return DecodedInstruction::BranchExchange {
@@ -295,16 +294,3 @@ fn decode_load_store_shift(opcode: u32) -> Option<RegisterShift> {
         _ => return None,
     })
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

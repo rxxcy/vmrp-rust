@@ -31,6 +31,18 @@ fn thumb_add_updates_registers() {
 }
 
 #[test]
+fn thumb_orr_register_updates_destination_register() {
+    let mut cpu = new_thumb_cpu(0x4311);
+    cpu.regs_mut().set_reg(1, 0x0F00);
+    cpu.regs_mut().set_reg(2, 0x00F0);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(1), 0x0FF0);
+    assert_eq!(cpu.regs().pc(), 0x80002);
+}
+
+#[test]
 fn thumb_state_advances_pc_by_two_bytes() {
     let mut cpu = new_thumb_cpu(0x2000);
 
@@ -174,4 +186,14 @@ fn thumb_pop_with_pc_restores_register_and_returns() {
     assert_eq!(cpu.regs().sp(), 0x80088);
     assert_eq!(cpu.regs().pc(), 0x80020);
     assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Thumb);
+}
+
+#[test]
+fn thumb_bcs_branch_uses_carry_flag() {
+    let mut cpu = new_thumb_cpu(0xD201);
+    cpu.regs_mut().cpsr_mut().set_carry(true);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().pc(), 0x80006);
 }

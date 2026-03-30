@@ -542,10 +542,10 @@ unsafe extern "system" {
 mod tests {
     use super::{
         copy_rgb565_region_to_bgra, should_keep_window_open, translate_win32_key_event,
-        translate_win32_pointer_event, DirtyRect, GuestInputEvent,
-        MR_EVENT_EXIT, MR_KEY_0, MR_KEY_POWER, MR_KEY_PRESS, MR_KEY_RELEASE, MR_KEY_SELECT,
-        MR_KEY_UP, MR_MOUSE_DOWN, MR_MOUSE_MOVE, MR_MOUSE_UP, VK_ESCAPE, VK_RETURN, VK_UP,
-        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        translate_win32_pointer_event, DirtyRect, GuestInputEvent, MR_EVENT_EXIT, MR_KEY_0,
+        MR_KEY_POWER, MR_KEY_PRESS, MR_KEY_RELEASE, MR_KEY_SELECT, MR_KEY_UP, MR_MOUSE_DOWN,
+        MR_MOUSE_MOVE, MR_MOUSE_UP, VK_ESCAPE, VK_RETURN, VK_UP, WM_KEYDOWN, WM_KEYUP,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     };
 
     #[test]
@@ -685,4 +685,3 @@ mod tests {
         ((y as u32) << 16 | x as u32) as isize
     }
 }
-

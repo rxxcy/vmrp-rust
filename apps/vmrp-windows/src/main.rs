@@ -222,11 +222,15 @@ fn load_runtime_assets(mrp: &MrpFile, mrp_path: &str) -> Result<MrpRuntimeAssets
                 if !candidate.is_file() {
                     continue;
                 }
-                let ext = ExtFile::from_path(&candidate)
-                    .map_err(|err| format!("load fallback helper failed at {}: {err:?}", candidate.display()))?;
-                return mrp
-                    .runtime_assets_with_ext(ext)
-                    .map_err(|err| format!("build runtime assets with fallback helper failed: {err:?}"));
+                let ext = ExtFile::from_path(&candidate).map_err(|err| {
+                    format!(
+                        "load fallback helper failed at {}: {err:?}",
+                        candidate.display()
+                    )
+                })?;
+                return mrp.runtime_assets_with_ext(ext).map_err(|err| {
+                    format!("build runtime assets with fallback helper failed: {err:?}")
+                });
             }
             Err(String::from("NotFound"))
         }
@@ -482,16 +486,31 @@ fn push_recent_trace_line(recent: &mut VecDeque<String>, capacity: usize, line: 
 }
 
 fn format_step_trace_line(label: &str, observed: usize, trace: &StepTrace) -> String {
+    let writes = if trace.register_writes.is_empty() {
+        String::from("writes=[]")
+    } else {
+        let rendered = trace
+            .register_writes
+            .iter()
+            .map(|write| format!("r{}=0x{:08X}", write.index, write.value))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("writes=[{rendered}]")
+    };
     format!(
-        "{label}_step[{observed}] mode={:?} pc=0x{:08X} op=0x{:08X}",
+        "{label}_step[{observed}] mode={:?} pc=0x{:08X} op=0x{:08X} {writes}",
         trace.mode, trace.pc, trace.opcode
     )
 }
 
 fn should_dump_recent_trace_for_guest_log(msg: &str) -> bool {
-    ["invalid compressed data", "unzip err", "cannot read start.mr"]
-        .iter()
-        .any(|needle| msg.contains(needle))
+    [
+        "invalid compressed data",
+        "unzip err",
+        "cannot read start.mr",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
 }
 
 fn dump_recent_trace(label: &str, recent: &VecDeque<String>, limit: usize) {
@@ -541,10 +560,7 @@ fn run_loop(
         match host.handle(cpu) {
             Ok(true) => {
                 observed += 1;
-                let line = format!(
-                    "{label}_host_step[{observed}] pc=0x{:08X}",
-                    cpu.regs().pc()
-                );
+                let line = format!("{label}_host_step[{observed}] pc=0x{:08X}", cpu.regs().pc());
                 push_recent_trace_line(&mut recent, RECENT_TRACE_CAPACITY, line.clone());
                 if verbose && observed <= trace_limit {
                     println!("{line}");
@@ -553,7 +569,8 @@ fn run_loop(
                     return RuntimeStepResult::Stop(err);
                 }
                 if let Some(msg) = host.take_last_log_message() {
-                    if verbose && should_dump_recent_trace_for_guest_log(&msg) && !recent.is_empty() {
+                    if verbose && should_dump_recent_trace_for_guest_log(&msg) && !recent.is_empty()
+                    {
                         println!("stage={label} guest_log_trigger={msg}");
                         dump_recent_trace(label, &recent, LOG_TRIGGER_TRACE_DUMP_LIMIT);
                     }
@@ -825,10 +842,10 @@ mod tests {
         mrp_guest_filename, parse_args_from, push_recent_trace_line,
         should_keep_waiting_for_host_events, to_presenter_rect, ParseOutcome,
     };
-    use std::collections::VecDeque;
     use crate::presenter::DirtyRect;
-    use vmrp_cpu::{ExecutionMode, StepTrace};
+    use std::collections::VecDeque;
     use vmrp_core::DEFAULT_LAYOUT;
+    use vmrp_cpu::{ExecutionMode, StepTrace};
     use vmrp_platform::HostScreenRegion;
 
     #[test]
@@ -868,8 +885,18 @@ mod tests {
     fn window_idle_policy_waits_for_input_after_first_frame() {
         assert!(should_keep_waiting_for_host_events(true, None, 0, 4000));
         assert!(!should_keep_waiting_for_host_events(false, None, 0, 4000));
-        assert!(should_keep_waiting_for_host_events(false, Some(10), 0, 4000));
-        assert!(!should_keep_waiting_for_host_events(false, Some(10), 4000, 4000));
+        assert!(should_keep_waiting_for_host_events(
+            false,
+            Some(10),
+            0,
+            4000
+        ));
+        assert!(!should_keep_waiting_for_host_events(
+            false,
+            Some(10),
+            4000,
+            4000
+        ));
     }
 
     #[test]
@@ -903,7 +930,10 @@ mod tests {
 
     #[test]
     fn default_stack_top_matches_start_of_memory_manager_region() {
-        assert_eq!(default_stack_top(), DEFAULT_LAYOUT.memory_manager_address().get());
+        assert_eq!(
+            default_stack_top(),
+            DEFAULT_LAYOUT.memory_manager_address().get()
+        );
     }
 
     #[test]
@@ -946,5 +976,3 @@ mod tests {
         );
     }
 }
-
-

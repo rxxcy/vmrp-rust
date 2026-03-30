@@ -297,4 +297,3 @@ fn decodes_halfword_transfer_immediate() {
         }
     ));
 }
-

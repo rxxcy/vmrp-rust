@@ -133,7 +133,10 @@ fn dsm_log_callback_exposes_last_guest_message() {
     cpu.regs_mut().set_reg(0, 0x191000);
 
     assert!(host.handle(&mut cpu).unwrap());
-    assert_eq!(host.take_last_log_message(), Some(String::from("diagnostic")));
+    assert_eq!(
+        host.take_last_log_message(),
+        Some(String::from("diagnostic"))
+    );
     assert_eq!(host.take_last_log_message(), None);
 }
 
@@ -848,8 +851,6 @@ fn dsm_draw_bitmap_uses_source_local_coordinates_for_offset_destination() {
     assert_eq!(framebuffer[bottom_right], 0x0404);
 }
 
-
-
 #[test]
 fn host_mr_malloc_uses_memory_manager_region_and_reuses_freed_block() {
     let mut host = new_host();
@@ -886,5 +887,3 @@ fn host_mr_malloc_uses_memory_manager_region_and_reuses_freed_block() {
 
     assert_eq!(second, first);
 }
-
-

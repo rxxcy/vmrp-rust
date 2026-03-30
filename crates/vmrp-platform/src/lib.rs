@@ -31,12 +31,58 @@ const MR_FILE_RECREATE: u32 = 16;
 const MR_SEEK_SET: u32 = 0;
 const MR_SEEK_CUR: u32 = 1;
 const MR_SEEK_END: u32 = 2;
+const MR_GET_SCREEN_INFO_OFFSET: u32 = 0x140;
 const MR_IS_FILE: i32 = 1;
 const MR_IS_DIR: i32 = 2;
 const MR_IS_INVALID: i32 = 8;
 const DSM_MEM_GET_SIZE: u32 = 4 * 1024 * 1024;
 const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
+const DEFAULT_MR_TABLE_ADDR: GuestAddr = GuestAddr::new(0x180000);
+const MR_GET_SCREEN_INFO_ADDR: GuestAddr = GuestAddr::new(0x181340);
+const LG_MEM_BASE_OFFSET: u32 = 0x1B0;
+const LG_MEM_LEN_OFFSET: u32 = 0x1B4;
+const LG_MEM_END_OFFSET: u32 = 0x1B8;
+const LG_MEM_LEFT_OFFSET: u32 = 0x1BC;
+const LG_MEM_MIN_OFFSET: u32 = 0x21C;
+const LG_MEM_TOP_OFFSET: u32 = 0x220;
+const MR_C_INTERNAL_TABLE_OFFSET: u32 = 0x5C;
+const MR_C_PORT_TABLE_OFFSET: u32 = 0x60;
+const MR_TABLE_MEMORY_CELLS_OFFSET: u32 = 0x300;
+const MR_TABLE_INTERNAL_TABLE_OFFSET: u32 = 0x340;
+const MR_TABLE_PORT_TABLE_OFFSET: u32 = 0x480;
+const MR_TABLE_M0_FILES_OFFSET: u32 = 0x4C0;
+const MR_TABLE_INTERNAL_DATA_OFFSET: u32 = 0x5A0;
+const LG_MEM_BASE_CELL_OFFSET: u32 = 0x00;
+const LG_MEM_LEN_CELL_OFFSET: u32 = 0x04;
+const LG_MEM_END_CELL_OFFSET: u32 = 0x08;
+const LG_MEM_LEFT_CELL_OFFSET: u32 = 0x0C;
+const LG_MEM_MIN_CELL_OFFSET: u32 = 0x10;
+const LG_MEM_TOP_CELL_OFFSET: u32 = 0x14;
+const VM_STATE_CELL_OFFSET: u32 = 0x00;
+const MR_STATE_CELL_OFFSET: u32 = 0x04;
+const BI_CELL_OFFSET: u32 = 0x08;
+const MR_TIMER_P_CELL_OFFSET: u32 = 0x0C;
+const MR_TIMER_STATE_CELL_OFFSET: u32 = 0x10;
+const MR_TIMER_RUN_WITHOUT_PAUSE_CELL_OFFSET: u32 = 0x14;
+const MR_GZ_IN_BUF_CELL_OFFSET: u32 = 0x18;
+const MR_GZ_OUT_BUF_CELL_OFFSET: u32 = 0x1C;
+const LG_GZINPTR_CELL_OFFSET: u32 = 0x20;
+const LG_GZOUTCNT_CELL_OFFSET: u32 = 0x24;
+const MR_SMS_CFG_NEED_SAVE_CELL_OFFSET: u32 = 0x28;
+const MR_C_INTERNAL_TABLE_LEN: u32 = 78;
+const MR_C_PORT_TABLE_LEN: u32 = 4;
+const MR_M0_FILES_LEN: u32 = 50;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemoryManagerSnapshot {
+    base: u32,
+    len: u32,
+    end: u32,
+    left: u32,
+    min: u32,
+    top: u32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExtBootstrap {
@@ -63,8 +109,9 @@ impl ExtBootstrap {
             self.mr_c_function_p_addr.get(),
         )?;
 
-        // Seed a non-null default for early table lookups so unresolved entries
-        // return safely instead of jumping to address 0.
+        // Default unresolved entries to a safe returning stub so legacy guests
+        // can still indirect-call optional hooks. Known MAP_DATA slots are
+        // rewritten below to guest-visible cell pointers.
         for offset in (0..=0x240u32).step_by(4) {
             let slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(offset));
             memory.write32(slot, self.mr_free_addr.get())?;
@@ -87,12 +134,22 @@ impl ExtBootstrap {
         let memset_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MEMSET_OFFSET));
         memory.write32(memset_slot, self.memset_addr.get())?;
 
+        let screen_info_slot = GuestAddr::new(
+            self.mr_table_addr
+                .get()
+                .wrapping_add(MR_GET_SCREEN_INFO_OFFSET),
+        );
+        memory.write32(screen_info_slot, MR_GET_SCREEN_INFO_ADDR.get())?;
+
         let c_function_new_slot = GuestAddr::new(
             self.mr_table_addr
                 .get()
                 .wrapping_add(MR_C_FUNCTION_NEW_OFFSET),
         );
         memory.write32(c_function_new_slot, self.mr_c_function_new_addr.get())?;
+
+        seed_memory_manager_cells(memory, self.mr_table_addr, MemoryManagerSnapshot::initial())?;
+        seed_internal_runtime_tables(memory, self.mr_table_addr, self.mr_free_addr)?;
 
         // Host callback stubs. Actual behavior is implemented in ExtHost::handle.
         memory.write32(self.mr_c_function_new_addr, MOV_R0_IMM0)?;
@@ -119,6 +176,11 @@ impl ExtBootstrap {
         memory.write32(self.mr_realloc_addr, MOV_R0_IMM0)?;
         memory.write32(
             GuestAddr::new(self.mr_realloc_addr.get().wrapping_add(4)),
+            BX_LR,
+        )?;
+        memory.write32(MR_GET_SCREEN_INFO_ADDR, MOV_R0_IMM0)?;
+        memory.write32(
+            GuestAddr::new(MR_GET_SCREEN_INFO_ADDR.get().wrapping_add(4)),
             BX_LR,
         )?;
         Ok(())
@@ -216,6 +278,7 @@ pub struct ExtHost {
     pub memset_addr: GuestAddr,
     pub alloc_base: GuestAddr,
     pub alloc_size: u32,
+    mr_table_addr: GuestAddr,
     ext_helper_addr: Option<GuestAddr>,
     next_callback: u32,
     heap_blocks: Vec<FreeBlock>,
@@ -235,6 +298,8 @@ pub struct ExtHost {
     next_file_handle: i32,
     dirs: BTreeMap<i32, HostDir>,
     next_dir_handle: i32,
+    memory_manager_min_free: u32,
+    memory_manager_peak_used: u32,
 }
 
 impl ExtHost {
@@ -260,6 +325,7 @@ impl ExtHost {
             memset_addr,
             alloc_base,
             alloc_size,
+            mr_table_addr: DEFAULT_MR_TABLE_ADDR,
             ext_helper_addr: None,
             next_callback: alloc_base
                 .get()
@@ -285,6 +351,8 @@ impl ExtHost {
             next_file_handle: 3,
             dirs: BTreeMap::new(),
             next_dir_handle: 1000,
+            memory_manager_min_free: memory_manager_total_len(),
+            memory_manager_peak_used: 0,
         }
     }
 
@@ -296,13 +364,20 @@ impl ExtHost {
         self.mr_c_function_p_addr
     }
 
-    pub fn reset_alloc(&mut self) {
+    pub fn set_mr_table_addr(&mut self, addr: GuestAddr) {
+        self.mr_table_addr = addr;
+    }
+
+    pub fn reset_alloc<B: MemoryBus>(&mut self, memory: &mut B) -> Result<(), MemoryAccessError> {
         self.heap_blocks.clear();
         self.heap_blocks.push(FreeBlock {
             start: DEFAULT_LAYOUT.memory_manager_address().get(),
             len: DEFAULT_LAYOUT.memory_manager_size(),
         });
         self.ext_allocations.clear();
+        self.memory_manager_min_free = memory_manager_total_len();
+        self.memory_manager_peak_used = 0;
+        self.sync_memory_manager_cells(memory)
     }
 
     pub fn set_working_dir<P: Into<PathBuf>>(&mut self, path: P) {
@@ -441,6 +516,11 @@ impl ExtHost {
             return Ok(true);
         }
 
+        if pc == MR_GET_SCREEN_INFO_ADDR.get() {
+            self.handle_mr_get_screen_info(cpu)?;
+            return Ok(true);
+        }
+
         if let Some(callback) = self.dsm_callbacks.get(&pc).copied() {
             self.handle_dsm_callback(cpu, callback)?;
             return Ok(true);
@@ -474,20 +554,28 @@ impl ExtHost {
         &mut self,
         cpu: &mut Cpu<B>,
     ) -> Result<(), MemoryAccessError> {
+        if self.verbose {
+            println!(
+                "[host-stub] fn=mr_malloc lr=0x{:X} r0=0x{:X} r1=0x{:X} r2=0x{:X}",
+                cpu.regs().lr(),
+                cpu.regs().reg(0),
+                cpu.regs().reg(1),
+                cpu.regs().reg(2)
+            );
+        }
         let requested = cpu.regs().reg(0).max(1);
         let out = self.alloc_ext(cpu.memory_mut(), requested)?.unwrap_or(0);
         cpu.regs_mut().set_reg(0, out);
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
         Ok(())
     }
 
-    fn handle_mr_free<B: MemoryBus>(
-        &mut self,
-        cpu: &mut Cpu<B>,
-    ) -> Result<(), MemoryAccessError> {
+    fn handle_mr_free<B: MemoryBus>(&mut self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
         let ptr = cpu.regs().reg(0);
         self.free_ext(ptr);
         cpu.regs_mut().set_reg(0, 0);
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
         Ok(())
     }
@@ -525,6 +613,7 @@ impl ExtHost {
         };
 
         cpu.regs_mut().set_reg(0, out);
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
         Ok(())
     }
@@ -548,6 +637,15 @@ impl ExtHost {
     }
 
     fn handle_memset<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        if self.verbose {
+            println!(
+                "[host-stub] fn=memset lr=0x{:X} r0=0x{:X} r1=0x{:X} r2=0x{:X}",
+                cpu.regs().lr(),
+                cpu.regs().reg(0),
+                cpu.regs().reg(1),
+                cpu.regs().reg(2)
+            );
+        }
         let dst = cpu.regs().reg(0);
         let value = cpu.regs().reg(1) as u8;
         let len = cpu.regs().reg(2);
@@ -562,9 +660,30 @@ impl ExtHost {
         Ok(())
     }
 
+    fn handle_mr_get_screen_info<B: MemoryBus>(
+        &self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let out = cpu.regs().reg(0);
+        if out != 0 {
+            cpu.memory_mut()
+                .write32(GuestAddr::new(out), SCREEN_WIDTH as u32)?;
+            cpu.memory_mut()
+                .write32(GuestAddr::new(out.wrapping_add(4)), SCREEN_HEIGHT as u32)?;
+            cpu.memory_mut()
+                .write32(GuestAddr::new(out.wrapping_add(8)), 16)?;
+        }
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
     fn alloc_raw(&mut self, size: u32) -> Option<u32> {
         let aligned = align_up(size.max(1), 8);
-        let index = self.heap_blocks.iter().position(|block| block.len >= aligned)?;
+        let index = self
+            .heap_blocks
+            .iter()
+            .position(|block| block.len >= aligned)?;
         let block = self.heap_blocks[index];
         let ptr = block.start;
         if block.len == aligned {
@@ -573,6 +692,11 @@ impl ExtHost {
             self.heap_blocks[index].start = block.start.wrapping_add(aligned);
             self.heap_blocks[index].len = block.len.wrapping_sub(aligned);
         }
+        let free = self.memory_manager_free_bytes();
+        self.memory_manager_min_free = self.memory_manager_min_free.min(free);
+        self.memory_manager_peak_used = self
+            .memory_manager_peak_used
+            .max(memory_manager_total_len().saturating_sub(free));
         Some(ptr)
     }
 
@@ -652,7 +776,10 @@ impl ExtHost {
             return;
         }
         if let Some(allocation) = self.ext_allocations.remove(&ptr) {
-            self.free_raw(allocation.raw_addr, allocation.requested_len.saturating_add(4));
+            self.free_raw(
+                allocation.raw_addr,
+                allocation.requested_len.saturating_add(4),
+            );
         }
     }
 
@@ -668,6 +795,28 @@ impl ExtHost {
         } else {
             Ok(0)
         }
+    }
+
+    fn memory_manager_free_bytes(&self) -> u32 {
+        self.heap_blocks.iter().map(|block| block.len).sum()
+    }
+
+    fn sync_memory_manager_cells<B: MemoryBus>(
+        &self,
+        memory: &mut B,
+    ) -> Result<(), MemoryAccessError> {
+        write_memory_manager_cell_values(
+            memory,
+            self.mr_table_addr,
+            MemoryManagerSnapshot {
+                base: memory_manager_base(),
+                len: memory_manager_total_len(),
+                end: memory_manager_end(),
+                left: self.memory_manager_free_bytes(),
+                min: self.memory_manager_min_free,
+                top: self.memory_manager_peak_used,
+            },
+        )
     }
 
     fn register_dsm_callback<B: MemoryBus>(
@@ -687,6 +836,16 @@ impl ExtHost {
         cpu: &mut Cpu<B>,
         callback: DsmHostFn,
     ) -> Result<(), MemoryAccessError> {
+        if self.verbose {
+            println!(
+                "[host-callback] fn={:?} r0=0x{:X} r1=0x{:X} r2=0x{:X} r3=0x{:X}",
+                callback,
+                cpu.regs().reg(0),
+                cpu.regs().reg(1),
+                cpu.regs().reg(2),
+                cpu.regs().reg(3),
+            );
+        }
         match callback {
             DsmHostFn::Test => {
                 return_to_lr(cpu);
@@ -726,12 +885,14 @@ impl ExtHost {
                 } else {
                     cpu.regs_mut().set_reg(0, MR_FAILED as u32);
                 }
+                self.sync_memory_manager_cells(cpu.memory_mut())?;
                 return_to_lr(cpu);
             }
             DsmHostFn::MemFree => {
                 let mem = cpu.regs().reg(0);
                 self.free_ext(mem);
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+                self.sync_memory_manager_cells(cpu.memory_mut())?;
                 return_to_lr(cpu);
             }
             DsmHostFn::TimerStart => {
@@ -1137,6 +1298,217 @@ fn return_to_lr<B>(cpu: &mut Cpu<B>) {
     cpu.regs_mut().set_pc(lr & !1);
 }
 
+fn memory_manager_base() -> u32 {
+    align_up(DEFAULT_LAYOUT.memory_manager_address().get(), 4)
+}
+
+fn memory_manager_total_len() -> u32 {
+    let adjustment =
+        memory_manager_base().wrapping_sub(DEFAULT_LAYOUT.memory_manager_address().get());
+    DEFAULT_LAYOUT
+        .memory_manager_size()
+        .wrapping_sub(adjustment)
+        & !3
+}
+
+fn memory_manager_end() -> u32 {
+    memory_manager_base().wrapping_add(memory_manager_total_len())
+}
+
+impl MemoryManagerSnapshot {
+    fn initial() -> Self {
+        let len = memory_manager_total_len();
+        Self {
+            base: memory_manager_base(),
+            len,
+            end: memory_manager_end(),
+            left: len,
+            min: len,
+            top: 0,
+        }
+    }
+}
+
+fn memory_manager_cell_addr(mr_table_addr: GuestAddr, offset: u32) -> GuestAddr {
+    GuestAddr::new(
+        mr_table_addr
+            .get()
+            .wrapping_add(MR_TABLE_MEMORY_CELLS_OFFSET)
+            .wrapping_add(offset),
+    )
+}
+
+fn seed_memory_manager_cells<B: MemoryBus>(
+    memory: &mut B,
+    mr_table_addr: GuestAddr,
+    snapshot: MemoryManagerSnapshot,
+) -> Result<(), MemoryAccessError> {
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_BASE_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_BASE_CELL_OFFSET).get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_LEN_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_LEN_CELL_OFFSET).get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_END_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_END_CELL_OFFSET).get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_LEFT_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_LEFT_CELL_OFFSET).get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_MIN_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_MIN_CELL_OFFSET).get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(LG_MEM_TOP_OFFSET)),
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_TOP_CELL_OFFSET).get(),
+    )?;
+    write_memory_manager_cell_values(memory, mr_table_addr, snapshot)
+}
+
+fn write_memory_manager_cell_values<B: MemoryBus>(
+    memory: &mut B,
+    mr_table_addr: GuestAddr,
+    snapshot: MemoryManagerSnapshot,
+) -> Result<(), MemoryAccessError> {
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_BASE_CELL_OFFSET),
+        snapshot.base,
+    )?;
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_LEN_CELL_OFFSET),
+        snapshot.len,
+    )?;
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_END_CELL_OFFSET),
+        snapshot.end,
+    )?;
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_LEFT_CELL_OFFSET),
+        snapshot.left,
+    )?;
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_MIN_CELL_OFFSET),
+        snapshot.min,
+    )?;
+    memory.write32(
+        memory_manager_cell_addr(mr_table_addr, LG_MEM_TOP_CELL_OFFSET),
+        snapshot.top,
+    )?;
+    Ok(())
+}
+
+fn reserved_guest_addr(mr_table_addr: GuestAddr, offset: u32) -> GuestAddr {
+    GuestAddr::new(mr_table_addr.get().wrapping_add(offset))
+}
+
+fn internal_data_cell_addr(mr_table_addr: GuestAddr, offset: u32) -> GuestAddr {
+    reserved_guest_addr(
+        mr_table_addr,
+        MR_TABLE_INTERNAL_DATA_OFFSET.wrapping_add(offset),
+    )
+}
+
+fn seed_internal_runtime_tables<B: MemoryBus>(
+    memory: &mut B,
+    mr_table_addr: GuestAddr,
+    safe_stub_addr: GuestAddr,
+) -> Result<(), MemoryAccessError> {
+    let internal_table_addr = reserved_guest_addr(mr_table_addr, MR_TABLE_INTERNAL_TABLE_OFFSET);
+    let port_table_addr = reserved_guest_addr(mr_table_addr, MR_TABLE_PORT_TABLE_OFFSET);
+    let m0_files_addr = reserved_guest_addr(mr_table_addr, MR_TABLE_M0_FILES_OFFSET);
+
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(MR_C_INTERNAL_TABLE_OFFSET)),
+        internal_table_addr.get(),
+    )?;
+    memory.write32(
+        GuestAddr::new(mr_table_addr.get().wrapping_add(MR_C_PORT_TABLE_OFFSET)),
+        port_table_addr.get(),
+    )?;
+
+    for index in 0..MR_C_PORT_TABLE_LEN {
+        memory.write32(
+            GuestAddr::new(port_table_addr.get().wrapping_add(index.wrapping_mul(4))),
+            0,
+        )?;
+    }
+
+    for index in 0..MR_M0_FILES_LEN {
+        memory.write32(
+            GuestAddr::new(m0_files_addr.get().wrapping_add(index.wrapping_mul(4))),
+            0,
+        )?;
+    }
+
+    let data_entries = [
+        m0_files_addr.get(),
+        internal_data_cell_addr(mr_table_addr, VM_STATE_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_STATE_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, BI_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_TIMER_P_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_TIMER_STATE_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_TIMER_RUN_WITHOUT_PAUSE_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_GZ_IN_BUF_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_GZ_OUT_BUF_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, LG_GZINPTR_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, LG_GZOUTCNT_CELL_OFFSET).get(),
+        internal_data_cell_addr(mr_table_addr, MR_SMS_CFG_NEED_SAVE_CELL_OFFSET).get(),
+    ];
+
+    for (index, value) in data_entries.into_iter().enumerate() {
+        memory.write32(
+            GuestAddr::new(
+                internal_table_addr
+                    .get()
+                    .wrapping_add((index as u32).wrapping_mul(4)),
+            ),
+            value,
+        )?;
+    }
+
+    for index in data_entries.len() as u32..(MR_C_INTERNAL_TABLE_LEN - 1) {
+        memory.write32(
+            GuestAddr::new(
+                internal_table_addr
+                    .get()
+                    .wrapping_add(index.wrapping_mul(4)),
+            ),
+            safe_stub_addr.get(),
+        )?;
+    }
+    memory.write32(
+        GuestAddr::new(
+            internal_table_addr
+                .get()
+                .wrapping_add((MR_C_INTERNAL_TABLE_LEN - 1).wrapping_mul(4)),
+        ),
+        0,
+    )?;
+
+    for offset in [
+        VM_STATE_CELL_OFFSET,
+        MR_STATE_CELL_OFFSET,
+        BI_CELL_OFFSET,
+        MR_TIMER_P_CELL_OFFSET,
+        MR_TIMER_STATE_CELL_OFFSET,
+        MR_TIMER_RUN_WITHOUT_PAUSE_CELL_OFFSET,
+        MR_GZ_IN_BUF_CELL_OFFSET,
+        MR_GZ_OUT_BUF_CELL_OFFSET,
+        LG_GZINPTR_CELL_OFFSET,
+        LG_GZOUTCNT_CELL_OFFSET,
+        MR_SMS_CFG_NEED_SAVE_CELL_OFFSET,
+    ] {
+        memory.write32(internal_data_cell_addr(mr_table_addr, offset), 0)?;
+    }
+
+    Ok(())
+}
+
 fn align_up(value: u32, align: u32) -> u32 {
     if align <= 1 {
         return value;
@@ -1258,7 +1630,3 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
-
-
-
-

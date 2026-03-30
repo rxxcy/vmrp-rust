@@ -113,6 +113,214 @@ fn bootstrap_seeds_mr_malloc_stub_for_indirect_call() {
 }
 
 #[test]
+fn bootstrap_maps_memory_manager_data_slots_to_guest_cells() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+    let manager_base = DEFAULT_LAYOUT.memory_manager_address().get();
+    let manager_len = DEFAULT_LAYOUT.memory_manager_size();
+    let manager_end = manager_base.wrapping_add(manager_len);
+
+    let base_cell = memory.read32(GuestAddr::new(0x1801B0)).unwrap();
+    let len_cell = memory.read32(GuestAddr::new(0x1801B4)).unwrap();
+    let end_cell = memory.read32(GuestAddr::new(0x1801B8)).unwrap();
+    let left_cell = memory.read32(GuestAddr::new(0x1801BC)).unwrap();
+    let min_cell = memory.read32(GuestAddr::new(0x18021C)).unwrap();
+    let top_cell = memory.read32(GuestAddr::new(0x180220)).unwrap();
+
+    for cell in [base_cell, len_cell, end_cell, left_cell, min_cell, top_cell] {
+        assert_ne!(cell, 0);
+    }
+
+    assert_eq!(
+        memory.read32(GuestAddr::new(base_cell)).unwrap(),
+        manager_base
+    );
+    assert_eq!(
+        memory.read32(GuestAddr::new(len_cell)).unwrap(),
+        manager_len
+    );
+    assert_eq!(
+        memory.read32(GuestAddr::new(end_cell)).unwrap(),
+        manager_end
+    );
+    assert_eq!(
+        memory.read32(GuestAddr::new(left_cell)).unwrap(),
+        manager_len
+    );
+    assert_eq!(
+        memory.read32(GuestAddr::new(min_cell)).unwrap(),
+        manager_len
+    );
+    assert_eq!(memory.read32(GuestAddr::new(top_cell)).unwrap(), 0);
+}
+
+#[test]
+fn bootstrap_maps_internal_and_port_tables_to_guest_data() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+
+    let internal_table = memory.read32(GuestAddr::new(0x18005C)).unwrap();
+    let port_table = memory.read32(GuestAddr::new(0x180060)).unwrap();
+
+    assert_ne!(internal_table, 0);
+    assert_ne!(port_table, 0);
+    assert_ne!(internal_table, 0x181140);
+    assert_ne!(port_table, 0x181140);
+
+    let timer_p_cell = memory
+        .read32(GuestAddr::new(internal_table.wrapping_add(0x10)))
+        .unwrap();
+    let timer_state_cell = memory
+        .read32(GuestAddr::new(internal_table.wrapping_add(0x14)))
+        .unwrap();
+    let timer_run_cell = memory
+        .read32(GuestAddr::new(internal_table.wrapping_add(0x18)))
+        .unwrap();
+
+    assert_ne!(timer_p_cell, 0);
+    assert_ne!(timer_state_cell, 0);
+    assert_ne!(timer_run_cell, 0);
+    assert_eq!(memory.read32(GuestAddr::new(timer_p_cell)).unwrap(), 0);
+    assert_eq!(memory.read32(GuestAddr::new(timer_state_cell)).unwrap(), 0);
+    assert_eq!(memory.read32(GuestAddr::new(timer_run_cell)).unwrap(), 0);
+    assert_eq!(memory.read32(GuestAddr::new(port_table)).unwrap(), 0);
+}
+
+#[test]
+fn host_updates_memory_manager_cells_after_mr_malloc_and_free() {
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let bootstrap = ExtBootstrap {
+        mr_table_addr: GuestAddr::new(0x180000),
+        mr_c_function_new_addr: GuestAddr::new(0x181000),
+        mr_c_function_p_addr: GuestAddr::new(0x182000),
+        mr_malloc_addr: GuestAddr::new(0x181100),
+        mr_free_addr: GuestAddr::new(0x181140),
+        mr_realloc_addr: GuestAddr::new(0x181180),
+        mr_malloc_result_addr: GuestAddr::new(0x183000),
+        memcpy_addr: GuestAddr::new(0x181200),
+        memset_addr: GuestAddr::new(0x181300),
+    };
+    bootstrap
+        .apply(&mut memory, DEFAULT_LAYOUT.code_address())
+        .unwrap();
+
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+    host.set_mr_table_addr(GuestAddr::new(0x180000));
+
+    let left_cell = memory.read32(GuestAddr::new(0x1801BC)).unwrap();
+    let min_cell = memory.read32(GuestAddr::new(0x18021C)).unwrap();
+    let top_cell = memory.read32(GuestAddr::new(0x180220)).unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    cpu.regs_mut().set_pc(0x181100);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 32);
+
+    assert!(host.handle(&mut cpu).unwrap());
+
+    let initial_left = DEFAULT_LAYOUT.memory_manager_size();
+    let alloc_len = 40;
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(left_cell)).unwrap(),
+        initial_left - alloc_len
+    );
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(min_cell)).unwrap(),
+        initial_left - alloc_len
+    );
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(top_cell)).unwrap(),
+        alloc_len
+    );
+
+    let ptr = cpu.regs().reg(0);
+    cpu.regs_mut().set_pc(0x181140);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, ptr);
+    cpu.regs_mut().set_reg(1, 32);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(left_cell)).unwrap(),
+        initial_left
+    );
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(min_cell)).unwrap(),
+        initial_left - alloc_len
+    );
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(top_cell)).unwrap(),
+        alloc_len
+    );
+}
+
+#[test]
+fn bootstrap_keeps_safe_stub_for_other_unresolved_function_slots() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(0x180144)).unwrap(),
+        0x181140
+    );
+}
+
+#[test]
+fn host_handles_mr_get_screen_info_stub() {
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let bootstrap = ExtBootstrap {
+        mr_table_addr: GuestAddr::new(0x180000),
+        mr_c_function_new_addr: GuestAddr::new(0x181000),
+        mr_c_function_p_addr: GuestAddr::new(0x182000),
+        mr_malloc_addr: GuestAddr::new(0x181100),
+        mr_free_addr: GuestAddr::new(0x181140),
+        mr_realloc_addr: GuestAddr::new(0x181180),
+        mr_malloc_result_addr: GuestAddr::new(0x183000),
+        memcpy_addr: GuestAddr::new(0x181200),
+        memset_addr: GuestAddr::new(0x181300),
+    };
+    bootstrap
+        .apply(&mut memory, DEFAULT_LAYOUT.code_address())
+        .unwrap();
+
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+
+    let mut cpu = Cpu::new(memory);
+    let screen_info_pc = cpu.memory().read32(GuestAddr::new(0x180140)).unwrap();
+    cpu.regs_mut().set_pc(screen_info_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x183500);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(cpu.memory().read32(GuestAddr::new(0x183500)).unwrap(), 240);
+    assert_eq!(cpu.memory().read32(GuestAddr::new(0x183504)).unwrap(), 320);
+    assert_eq!(cpu.memory().read32(GuestAddr::new(0x183508)).unwrap(), 16);
+}
+
+#[test]
 fn host_handles_memcpy_stub() {
     let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     let mut host = ExtHost::new(
@@ -208,4 +416,3 @@ fn host_handles_mr_c_function_new_stub() {
     let helper = host.ext_helper_addr().unwrap();
     assert!(helper.get() >= 0x80000);
 }
-

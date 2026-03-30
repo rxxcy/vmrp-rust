@@ -233,4 +233,3 @@ fn eor_register_xors_operands() {
     assert_eq!(cpu.regs().reg(8), 0xB89E_032D);
     assert_eq!(cpu.regs().pc(), 0x80004);
 }
-

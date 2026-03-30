@@ -92,10 +92,18 @@ fn byte_post_index_store_writes_only_low_byte_and_updates_base() {
     let mut cpu = new_arm_cpu(0xE4C13001);
     cpu.regs_mut().set_reg(1, 0x88000);
     cpu.regs_mut().set_reg(3, 0xAABB_CCDD);
-    cpu.memory_mut().write8(GuestAddr::new(0x88000), 0x11).unwrap();
-    cpu.memory_mut().write8(GuestAddr::new(0x88001), 0x22).unwrap();
-    cpu.memory_mut().write8(GuestAddr::new(0x88002), 0x33).unwrap();
-    cpu.memory_mut().write8(GuestAddr::new(0x88003), 0x44).unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x88000), 0x11)
+        .unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x88001), 0x22)
+        .unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x88002), 0x33)
+        .unwrap();
+    cpu.memory_mut()
+        .write8(GuestAddr::new(0x88003), 0x44)
+        .unwrap();
 
     cpu.step().unwrap();
 
@@ -240,5 +248,3 @@ fn smull_writes_high_and_low_words() {
     assert_eq!(cpu.regs().reg(3), 0xFFFF_FFFF);
     assert_eq!(cpu.regs().pc(), 0x80004);
 }
-
-
