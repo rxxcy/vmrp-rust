@@ -22,6 +22,16 @@ const DSM_INIT_CODE: i32 = -100;
 const MR_START_DSM_CODE: i32 = -99;
 const MR_TIMER_CODE: i32 = -96;
 const MR_EVENT_CODE: i32 = -95;
+const HELPER_EVENT_SIZE: u32 = 20;
+const LEGACY_MR_VERSION: u32 = 1968;
+const HELPER_APP_INFO_ADDR: u32 = RUNTIME_DATA_ADDR + 0x300;
+const HELPER_APP_INFO_SID_NAME_ADDR: u32 = RUNTIME_DATA_ADDR + 0x340;
+const HELPER_APP_INFO_SIZE: u32 = 16;
+const EXT_CHUNK_ADDR: u32 = 0x182100;
+const MR_C_FUNCTION_CONTEXT_EXT_CHUNK_OFFSET: u32 = 0x0C;
+const MR_C_FUNCTION_CONTEXT_STACK_OFFSET: u32 = 0x10;
+const LEGACY_EXT_CHUNK_CHECK: u32 = 0x7FD854EB;
+const LEGACY_EXT_TIMER_HANDLE: u32 = 0x270F;
 const WINDOW_TITLE: &str = "vmrp-rust";
 const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
@@ -54,6 +64,12 @@ struct RunReport {
 enum ParseOutcome {
     Help,
     Config(RunnerConfig),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperBootstrapPayload {
+    version_code: u32,
+    app_info_addr: u32,
 }
 
 fn main() {
@@ -330,6 +346,11 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     if let Some(parent) = Path::new(&config.mrp_path).parent() {
         host.set_working_dir(parent.to_path_buf());
     }
+    for entry in mrp.entries() {
+        if let Ok(bytes) = mrp.file_bytes_inflated(entry.name()) {
+            host.register_package_file(entry.name().to_string(), bytes);
+        }
+    }
 
     let mut cpu = Cpu::new(memory);
     cpu.regs_mut().set_pc(blob.entry().get());
@@ -372,7 +393,72 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     let mut start_dsm_ret = MR_FAILED;
 
     if let Some(helper) = helper {
-        setup_helper_call(&mut cpu, helper, host.c_function_p_addr(), 0, 0, 0);
+        seed_ext_chunk_descriptor(
+            cpu.memory_mut(),
+            &bootstrap,
+            blob.entry().get(),
+            blob.bytes().len() as u32 + 8,
+            helper.get(),
+        )
+        .map_err(|err| format!("seed ext chunk descriptor failed: {err:?}"))?;
+
+        let helper_bootstrap = prepare_helper_bootstrap_payload(cpu.memory_mut(), &mrp)
+            .map_err(|err| format!("prepare helper bootstrap payload failed: {err:?}"))?;
+
+        setup_helper_call(
+            &mut cpu,
+            helper,
+            host.c_function_p_addr(),
+            6,
+            blob.load_address().get(),
+            helper_bootstrap.version_code,
+        );
+        let stage_helper_version = run_loop(
+            &mut runtime,
+            &mut cpu,
+            &mut host,
+            config.step_limit,
+            config.trace_limit,
+            "helper_version",
+            config.verbose,
+            &mut presenter,
+        );
+        stages.push(stage_helper_version);
+        if true {
+            dump_helper_state(cpu.memory(), host.c_function_p_addr(), "helper_version");
+        }
+
+        setup_helper_call(
+            &mut cpu,
+            helper,
+            host.c_function_p_addr(),
+            8,
+            helper_bootstrap.app_info_addr,
+            HELPER_APP_INFO_SIZE,
+        );
+        let stage_helper_app_info = run_loop(
+            &mut runtime,
+            &mut cpu,
+            &mut host,
+            config.step_limit,
+            config.trace_limit,
+            "helper_app_info",
+            config.verbose,
+            &mut presenter,
+        );
+        stages.push(stage_helper_app_info);
+        if true {
+            dump_helper_state(cpu.memory(), host.c_function_p_addr(), "helper_app_info");
+        }
+
+        setup_helper_call(
+            &mut cpu,
+            helper,
+            host.c_function_p_addr(),
+            0,
+            blob.load_address().get(),
+            helper_bootstrap.version_code,
+        );
         let stage_helper_init = run_loop(
             &mut runtime,
             &mut cpu,
@@ -384,6 +470,11 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             &mut presenter,
         );
         stages.push(stage_helper_init);
+        if true {
+            dump_helper_state(cpu.memory(), host.c_function_p_addr(), "helper_init");
+        }
+        apply_helper_rw_debug_overrides(cpu.memory_mut(), host.c_function_p_addr(), config.verbose)
+            .map_err(|err| format!("apply helper rw debug overrides failed: {err:?}"))?;
 
         let dsm_require_funcs_addr = RUNTIME_DATA_ADDR + 0x200;
         host.install_dsm_require_funcs(
@@ -402,7 +493,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             host.c_function_p_addr(),
             1,
             dsm_init_event_addr,
-            12,
+            HELPER_EVENT_SIZE,
         );
         let stage_dsm_init = run_loop(
             &mut runtime,
@@ -427,7 +518,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             host.c_function_p_addr(),
             1,
             start_event_addr,
-            12,
+            HELPER_EVENT_SIZE,
         );
         let stage_start_dsm = run_loop(
             &mut runtime,
@@ -569,6 +660,7 @@ fn run_loop(
                     return RuntimeStepResult::Stop(err);
                 }
                 if let Some(msg) = host.take_last_log_message() {
+                    println!("stage={label} guest_log={msg}");
                     if verbose && should_dump_recent_trace_for_guest_log(&msg) && !recent.is_empty()
                     {
                         println!("stage={label} guest_log_trigger={msg}");
@@ -686,7 +778,7 @@ fn drive_runtime_events(
                         host.c_function_p_addr(),
                         1,
                         timer_event_addr,
-                        12,
+                        HELPER_EVENT_SIZE,
                     );
                     let stage_timer = run_loop(
                         runtime,
@@ -706,7 +798,14 @@ fn drive_runtime_events(
                     let event_addr =
                         write_event(cpu.memory_mut(), MR_EVENT_CODE, event_payload_addr, 0)
                             .map_err(|err| format!("write MR_EVENT event failed: {err:?}"))?;
-                    setup_helper_call(cpu, helper, host.c_function_p_addr(), 1, event_addr, 12);
+                    setup_helper_call(
+                        cpu,
+                        helper,
+                        host.c_function_p_addr(),
+                        1,
+                        event_addr,
+                        HELPER_EVENT_SIZE,
+                    );
                     let stage_event = run_loop(
                         runtime,
                         cpu,
@@ -752,6 +851,141 @@ fn drive_runtime_events(
 
     Ok(())
 }
+
+fn prepare_helper_bootstrap_payload(
+    memory: &mut TestMemory,
+    mrp: &MrpFile,
+) -> Result<HelperBootstrapPayload, vmrp_cpu::MemoryAccessError> {
+    let mut sid_name_cursor = HELPER_APP_INFO_SID_NAME_ADDR;
+    let sid_name_ptr = write_c_string(memory, &mut sid_name_cursor, mrp.internal_name())?;
+    write_u32(memory, HELPER_APP_INFO_ADDR, mrp.header().appid())?;
+    write_u32(memory, HELPER_APP_INFO_ADDR + 4, mrp.header().version())?;
+    write_u32(memory, HELPER_APP_INFO_ADDR + 8, sid_name_ptr)?;
+    write_u32(memory, HELPER_APP_INFO_ADDR + 12, 0)?;
+
+    Ok(HelperBootstrapPayload {
+        version_code: LEGACY_MR_VERSION,
+        app_info_addr: HELPER_APP_INFO_ADDR,
+    })
+}
+
+fn seed_ext_chunk_descriptor(
+    memory: &mut TestMemory,
+    bootstrap: &ExtBootstrap,
+    ext_entry_addr: u32,
+    ext_code_len: u32,
+    helper_addr: u32,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    let var_buf = memory.read32(GuestAddr::new(bootstrap.mr_c_function_p_addr.get()))?;
+    let var_len = memory.read32(GuestAddr::new(bootstrap.mr_c_function_p_addr.get() + 4))?;
+
+    write_u32(memory, EXT_CHUNK_ADDR, LEGACY_EXT_CHUNK_CHECK)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x04, ext_entry_addr)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x08, helper_addr)?;
+    write_u32(
+        memory,
+        EXT_CHUNK_ADDR + 0x0C,
+        DEFAULT_LAYOUT.code_address().get(),
+    )?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x10, ext_code_len)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x14, var_buf)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x18, var_len)?;
+    write_u32(
+        memory,
+        EXT_CHUNK_ADDR + 0x1C,
+        bootstrap.mr_c_function_p_addr.get(),
+    )?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x20, 20)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x24, LEGACY_EXT_TIMER_HANDLE)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x28, 0)?;
+    write_u32(memory, EXT_CHUNK_ADDR + 0x2C, bootstrap.mr_table_addr.get())?;
+
+    write_u32(
+        memory,
+        bootstrap.mr_c_function_p_addr.get() + MR_C_FUNCTION_CONTEXT_EXT_CHUNK_OFFSET,
+        EXT_CHUNK_ADDR,
+    )?;
+    write_u32(
+        memory,
+        bootstrap.mr_c_function_p_addr.get() + MR_C_FUNCTION_CONTEXT_STACK_OFFSET,
+        DEFAULT_LAYOUT.stack_size(),
+    )?;
+    Ok(())
+}
+
+fn apply_helper_rw_debug_overrides(
+    memory: &mut TestMemory,
+    c_function_p: GuestAddr,
+    verbose: bool,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    let rw_base = memory.read32(GuestAddr::new(c_function_p.get()))?;
+    if rw_base == 0 {
+        return Ok(());
+    }
+
+    for (env_key, offset) in [("VMRP_FORCE_RW20", 0x20u32), ("VMRP_FORCE_RW24", 0x24u32)] {
+        let Ok(raw) = std::env::var(env_key) else {
+            continue;
+        };
+        let parsed = raw
+            .strip_prefix("0x")
+            .or_else(|| raw.strip_prefix("0X"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .or_else(|| raw.parse::<u32>().ok())
+            .unwrap_or(0);
+        write_u32(memory, rw_base.wrapping_add(offset), parsed)?;
+        if verbose {
+            println!("helper_debug_override[{env_key}]=0x{parsed:X}");
+        }
+    }
+    Ok(())
+}
+
+fn dump_helper_state(memory: &TestMemory, c_function_p: GuestAddr, label: &str) {
+    let rw_base = memory
+        .read32(GuestAddr::new(c_function_p.get()))
+        .unwrap_or(0);
+    let rw_len = memory
+        .read32(GuestAddr::new(c_function_p.get() + 4))
+        .unwrap_or(0);
+    let ext_type = memory
+        .read32(GuestAddr::new(c_function_p.get() + 8))
+        .unwrap_or(0);
+    let ext_chunk = memory
+        .read32(GuestAddr::new(
+            c_function_p.get() + MR_C_FUNCTION_CONTEXT_EXT_CHUNK_OFFSET,
+        ))
+        .unwrap_or(0);
+    let stack = memory
+        .read32(GuestAddr::new(
+            c_function_p.get() + MR_C_FUNCTION_CONTEXT_STACK_OFFSET,
+        ))
+        .unwrap_or(0);
+    println!("{label}_rw_base=0x{rw_base:X}");
+    println!("{label}_rw_len=0x{rw_len:X}");
+    println!("{label}_ext_type={ext_type}");
+    println!("{label}_ext_chunk=0x{ext_chunk:X}");
+    println!("{label}_stack=0x{stack:X}");
+    if rw_base != 0 {
+        for offset in [0x20u32, 0x24, 0x1BC, 0x1C0] {
+            let value = memory
+                .read32(GuestAddr::new(rw_base.wrapping_add(offset)))
+                .unwrap_or(0);
+            println!("{label}_rw[0x{offset:X}]=0x{value:X}");
+        }
+    }
+    if ext_chunk != 0 {
+        for offset in [
+            0x00u32, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C,
+        ] {
+            let value = memory
+                .read32(GuestAddr::new(ext_chunk.wrapping_add(offset)))
+                .unwrap_or(0);
+            println!("{label}_ext_chunk[0x{offset:X}]=0x{value:X}");
+        }
+    }
+}
+
 fn setup_helper_call(
     cpu: &mut Cpu<TestMemory>,
     helper: GuestAddr,
@@ -839,13 +1073,16 @@ fn write_c_string(
 mod tests {
     use super::{
         default_stack_top, format_step_trace_line, guest_ram_size, helper_ext_search_paths,
-        mrp_guest_filename, parse_args_from, push_recent_trace_line,
-        should_keep_waiting_for_host_events, to_presenter_rect, ParseOutcome,
+        mrp_guest_filename, parse_args_from, prepare_helper_bootstrap_payload,
+        push_recent_trace_line, should_keep_waiting_for_host_events, to_presenter_rect,
+        ParseOutcome,
     };
     use crate::presenter::DirtyRect;
     use std::collections::VecDeque;
-    use vmrp_core::DEFAULT_LAYOUT;
-    use vmrp_cpu::{ExecutionMode, StepTrace};
+    use std::path::PathBuf;
+    use vmrp_abi::MrpFile;
+    use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
+    use vmrp_cpu::{ExecutionMode, MemoryBus, StepTrace, TestMemory};
     use vmrp_platform::HostScreenRegion;
 
     #[test]
@@ -914,6 +1151,31 @@ mod tests {
             r"D:\opt\rust\vmrp\wasm\dist\fs\cfunction.ext"
         )));
     }
+
+    #[test]
+    fn helper_bootstrap_payload_uses_legacy_engine_version_and_mrp_metadata() {
+        let mrp = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+
+        let payload = prepare_helper_bootstrap_payload(&mut memory, &mrp).unwrap();
+
+        assert_eq!(payload.version_code, 1968);
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(payload.app_info_addr))
+                .unwrap(),
+            mrp.header().appid()
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(payload.app_info_addr + 4))
+                .unwrap(),
+            mrp.header().version()
+        );
+    }
     #[test]
     fn guest_ram_size_covers_default_layout_through_memory_manager_end() {
         let layout_end = DEFAULT_LAYOUT
@@ -972,7 +1234,8 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "start_dsm_step[17] mode=Thumb pc=0x00001234 op=0x0000B500"
+            "start_dsm_step[17] mode=Thumb pc=0x00001234 op=0x0000B500 writes=[]"
         );
     }
 }
+

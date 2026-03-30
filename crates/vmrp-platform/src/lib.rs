@@ -12,7 +12,23 @@ pub const MR_MALLOC_OFFSET: u32 = 0x0;
 pub const MR_FREE_OFFSET: u32 = 0x04;
 pub const MR_REALLOC_OFFSET: u32 = 0x08;
 pub const MEMCPY_OFFSET: u32 = 0x0C;
+const MEMMOVE_OFFSET: u32 = 0x10;
+const STRCPY_OFFSET: u32 = 0x14;
+const STRNCPY_OFFSET: u32 = 0x18;
+const STRCAT_OFFSET: u32 = 0x1C;
+const STRNCAT_OFFSET: u32 = 0x20;
+const MEMCMP_OFFSET: u32 = 0x24;
+const STRCMP_OFFSET: u32 = 0x28;
+const STRNCMP_OFFSET: u32 = 0x2C;
+const STRCOLL_OFFSET: u32 = 0x30;
+const MEMCHR_OFFSET: u32 = 0x34;
 pub const MEMSET_OFFSET: u32 = 0x38;
+const STRLEN_OFFSET: u32 = 0x3C;
+const STRSTR_OFFSET: u32 = 0x40;
+const SPRINTF_OFFSET: u32 = 0x44;
+const ATOI_OFFSET: u32 = 0x48;
+const STRTOUL_OFFSET: u32 = 0x4C;
+const MR_PRINTF_OFFSET: u32 = 0x68;
 pub const MR_C_FUNCTION_NEW_OFFSET: u32 = 0x64;
 pub const DSM_REQUIRE_FUNCS_SIZE: u32 = 0xD0;
 pub const DSM_FLAGS_OFFSET: u32 = 0xCC;
@@ -32,6 +48,9 @@ const MR_SEEK_SET: u32 = 0;
 const MR_SEEK_CUR: u32 = 1;
 const MR_SEEK_END: u32 = 2;
 const MR_GET_SCREEN_INFO_OFFSET: u32 = 0x140;
+const MR_TEST_COM_OFFSET: u32 = 0x208;
+const MR_TEST_COM1_OFFSET: u32 = 0x20C;
+const MR_READ_FILE_OFFSET: u32 = 0x1F4;
 const MR_IS_FILE: i32 = 1;
 const MR_IS_DIR: i32 = 2;
 const MR_IS_INVALID: i32 = 8;
@@ -40,6 +59,39 @@ const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
 const DEFAULT_MR_TABLE_ADDR: GuestAddr = GuestAddr::new(0x180000);
 const MR_GET_SCREEN_INFO_ADDR: GuestAddr = GuestAddr::new(0x181340);
+const MR_TEST_COM_ADDR: GuestAddr = GuestAddr::new(0x181380);
+const MR_TEST_COM1_ADDR: GuestAddr = GuestAddr::new(0x1813C0);
+const MR_READ_FILE_ADDR: GuestAddr = GuestAddr::new(0x181400);
+const MEMMOVE_ADDR: GuestAddr = GuestAddr::new(0x181440);
+const STRCPY_ADDR: GuestAddr = GuestAddr::new(0x181450);
+const STRNCPY_ADDR: GuestAddr = GuestAddr::new(0x181460);
+const STRCAT_ADDR: GuestAddr = GuestAddr::new(0x181470);
+const STRNCAT_ADDR: GuestAddr = GuestAddr::new(0x181480);
+const MEMCMP_ADDR: GuestAddr = GuestAddr::new(0x181490);
+const STRCMP_ADDR: GuestAddr = GuestAddr::new(0x1814A0);
+const STRNCMP_ADDR: GuestAddr = GuestAddr::new(0x1814B0);
+const STRCOLL_ADDR: GuestAddr = GuestAddr::new(0x1814C0);
+const MEMCHR_ADDR: GuestAddr = GuestAddr::new(0x1814D0);
+const STRLEN_ADDR: GuestAddr = GuestAddr::new(0x1814E0);
+const STRSTR_ADDR: GuestAddr = GuestAddr::new(0x1814F0);
+const SPRINTF_ADDR: GuestAddr = GuestAddr::new(0x181500);
+const ATOI_ADDR: GuestAddr = GuestAddr::new(0x181510);
+const STRTOUL_ADDR: GuestAddr = GuestAddr::new(0x181520);
+const MR_PRINTF_ADDR: GuestAddr = GuestAddr::new(0x181530);
+const MR_SCREEN_BUF_OFFSET: u32 = 0x16C;
+const MR_SCREEN_W_OFFSET: u32 = 0x170;
+const MR_SCREEN_H_OFFSET: u32 = 0x174;
+const MR_SCREEN_BIT_OFFSET: u32 = 0x178;
+const PACK_FILENAME_OFFSET: u32 = 0x190;
+const START_FILENAME_OFFSET: u32 = 0x194;
+const OLD_PACK_FILENAME_OFFSET: u32 = 0x198;
+const OLD_START_FILENAME_OFFSET: u32 = 0x19C;
+const MR_RAM_FILE_OFFSET: u32 = 0x1A0;
+const MR_RAM_FILE_LEN_OFFSET: u32 = 0x1A4;
+const MR_SOUND_ON_OFFSET: u32 = 0x1A8;
+const MR_SHAKE_ON_OFFSET: u32 = 0x1AC;
+const START_FILEPARAMETER_OFFSET: u32 = 0x228;
+const MR_ENTRY_OFFSET: u32 = 0x240;
 const LG_MEM_BASE_OFFSET: u32 = 0x1B0;
 const LG_MEM_LEN_OFFSET: u32 = 0x1B4;
 const LG_MEM_END_OFFSET: u32 = 0x1B8;
@@ -53,6 +105,28 @@ const MR_TABLE_INTERNAL_TABLE_OFFSET: u32 = 0x340;
 const MR_TABLE_PORT_TABLE_OFFSET: u32 = 0x480;
 const MR_TABLE_M0_FILES_OFFSET: u32 = 0x4C0;
 const MR_TABLE_INTERNAL_DATA_OFFSET: u32 = 0x5A0;
+const MR_TABLE_LEGACY_RUNTIME_OFFSET: u32 = 0x600;
+const LEGACY_SCREEN_BUF_PTR_CELL_OFFSET: u32 = 0x00;
+const LEGACY_SCREEN_W_CELL_OFFSET: u32 = 0x04;
+const LEGACY_SCREEN_H_CELL_OFFSET: u32 = 0x08;
+const LEGACY_SCREEN_BIT_CELL_OFFSET: u32 = 0x0C;
+const LEGACY_RAM_FILE_PTR_CELL_OFFSET: u32 = 0x10;
+const LEGACY_RAM_FILE_LEN_CELL_OFFSET: u32 = 0x14;
+const LEGACY_SOUND_ON_CELL_OFFSET: u32 = 0x18;
+const LEGACY_SHAKE_ON_CELL_OFFSET: u32 = 0x1C;
+const LEGACY_PACK_FILENAME_BUF_OFFSET: u32 = 0x40;
+const LEGACY_START_FILENAME_BUF_OFFSET: u32 = 0xC0;
+const LEGACY_OLD_PACK_FILENAME_BUF_OFFSET: u32 = 0x140;
+const LEGACY_OLD_START_FILENAME_BUF_OFFSET: u32 = 0x1C0;
+const LEGACY_START_FILEPARAMETER_BUF_OFFSET: u32 = 0x240;
+const LEGACY_ENTRY_BUF_OFFSET: u32 = 0x2C0;
+const LEGACY_FILENAME_BUFFER_LEN: usize = 128;
+const DEFAULT_START_FILE_NAME: &str = "start.mr";
+const MR_FLAGS_BI: u32 = 1;
+const MR_FLAGS_AI: u32 = 1 << 1;
+const MR_FLAGS_RI: u32 = 1 << 2;
+const MR_FLAGS_EI: u32 = 1 << 3;
+const HELPER_APP_INFO_PTR_OFFSET: u32 = 0x1C0;
 const LG_MEM_BASE_CELL_OFFSET: u32 = 0x00;
 const LG_MEM_LEN_CELL_OFFSET: u32 = 0x04;
 const LG_MEM_END_CELL_OFFSET: u32 = 0x08;
@@ -130,6 +204,27 @@ impl ExtBootstrap {
 
         let memcpy_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MEMCPY_OFFSET));
         memory.write32(memcpy_slot, self.memcpy_addr.get())?;
+        for (offset, addr) in [
+            (MEMMOVE_OFFSET, MEMMOVE_ADDR),
+            (STRCPY_OFFSET, STRCPY_ADDR),
+            (STRNCPY_OFFSET, STRNCPY_ADDR),
+            (STRCAT_OFFSET, STRCAT_ADDR),
+            (STRNCAT_OFFSET, STRNCAT_ADDR),
+            (MEMCMP_OFFSET, MEMCMP_ADDR),
+            (STRCMP_OFFSET, STRCMP_ADDR),
+            (STRNCMP_OFFSET, STRNCMP_ADDR),
+            (STRCOLL_OFFSET, STRCOLL_ADDR),
+            (MEMCHR_OFFSET, MEMCHR_ADDR),
+            (STRLEN_OFFSET, STRLEN_ADDR),
+            (STRSTR_OFFSET, STRSTR_ADDR),
+            (SPRINTF_OFFSET, SPRINTF_ADDR),
+            (ATOI_OFFSET, ATOI_ADDR),
+            (STRTOUL_OFFSET, STRTOUL_ADDR),
+            (MR_PRINTF_OFFSET, MR_PRINTF_ADDR),
+        ] {
+            let slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(offset));
+            memory.write32(slot, addr.get())?;
+        }
 
         let memset_slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(MEMSET_OFFSET));
         memory.write32(memset_slot, self.memset_addr.get())?;
@@ -141,6 +236,16 @@ impl ExtBootstrap {
         );
         memory.write32(screen_info_slot, MR_GET_SCREEN_INFO_ADDR.get())?;
 
+        let test_com_slot =
+            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_TEST_COM_OFFSET));
+        memory.write32(test_com_slot, MR_TEST_COM_ADDR.get())?;
+        let test_com1_slot =
+            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_TEST_COM1_OFFSET));
+        memory.write32(test_com1_slot, MR_TEST_COM1_ADDR.get())?;
+        let read_file_slot =
+            GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_READ_FILE_OFFSET));
+        memory.write32(read_file_slot, MR_READ_FILE_ADDR.get())?;
+
         let c_function_new_slot = GuestAddr::new(
             self.mr_table_addr
                 .get()
@@ -150,6 +255,7 @@ impl ExtBootstrap {
 
         seed_memory_manager_cells(memory, self.mr_table_addr, MemoryManagerSnapshot::initial())?;
         seed_internal_runtime_tables(memory, self.mr_table_addr, self.mr_free_addr)?;
+        seed_legacy_runtime_data(memory, self.mr_table_addr)?;
 
         // Host callback stubs. Actual behavior is implemented in ExtHost::handle.
         memory.write32(self.mr_c_function_new_addr, MOV_R0_IMM0)?;
@@ -178,9 +284,45 @@ impl ExtBootstrap {
             GuestAddr::new(self.mr_realloc_addr.get().wrapping_add(4)),
             BX_LR,
         )?;
+        for addr in [
+            MEMMOVE_ADDR,
+            STRCPY_ADDR,
+            STRNCPY_ADDR,
+            STRCAT_ADDR,
+            STRNCAT_ADDR,
+            MEMCMP_ADDR,
+            STRCMP_ADDR,
+            STRNCMP_ADDR,
+            STRCOLL_ADDR,
+            MEMCHR_ADDR,
+            STRLEN_ADDR,
+            STRSTR_ADDR,
+            SPRINTF_ADDR,
+            ATOI_ADDR,
+            STRTOUL_ADDR,
+            MR_PRINTF_ADDR,
+        ] {
+            memory.write32(addr, MOV_R0_IMM0)?;
+            memory.write32(GuestAddr::new(addr.get().wrapping_add(4)), BX_LR)?;
+        }
         memory.write32(MR_GET_SCREEN_INFO_ADDR, MOV_R0_IMM0)?;
         memory.write32(
             GuestAddr::new(MR_GET_SCREEN_INFO_ADDR.get().wrapping_add(4)),
+            BX_LR,
+        )?;
+        memory.write32(MR_TEST_COM_ADDR, MOV_R0_IMM0)?;
+        memory.write32(
+            GuestAddr::new(MR_TEST_COM_ADDR.get().wrapping_add(4)),
+            BX_LR,
+        )?;
+        memory.write32(MR_TEST_COM1_ADDR, MOV_R0_IMM0)?;
+        memory.write32(
+            GuestAddr::new(MR_TEST_COM1_ADDR.get().wrapping_add(4)),
+            BX_LR,
+        )?;
+        memory.write32(MR_READ_FILE_ADDR, MOV_R0_IMM0)?;
+        memory.write32(
+            GuestAddr::new(MR_READ_FILE_ADDR.get().wrapping_add(4)),
             BX_LR,
         )?;
         Ok(())
@@ -298,6 +440,7 @@ pub struct ExtHost {
     next_file_handle: i32,
     dirs: BTreeMap<i32, HostDir>,
     next_dir_handle: i32,
+    package_files: BTreeMap<String, Vec<u8>>,
     memory_manager_min_free: u32,
     memory_manager_peak_used: u32,
 }
@@ -351,6 +494,7 @@ impl ExtHost {
             next_file_handle: 3,
             dirs: BTreeMap::new(),
             next_dir_handle: 1000,
+            package_files: BTreeMap::new(),
             memory_manager_min_free: memory_manager_total_len(),
             memory_manager_peak_used: 0,
         }
@@ -386,6 +530,10 @@ impl ExtHost {
 
     pub fn set_verbose(&mut self, verbose: bool) {
         self.verbose = verbose;
+    }
+
+    pub fn register_package_file(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
+        self.package_files.insert(name.into(), bytes);
     }
 
     pub fn take_last_log_message(&mut self) -> Option<String> {
@@ -511,13 +659,108 @@ impl ExtHost {
             return Ok(true);
         }
 
+        if pc == MEMMOVE_ADDR.get() {
+            self.handle_memmove(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRCPY_ADDR.get() {
+            self.handle_strcpy(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRNCPY_ADDR.get() {
+            self.handle_strncpy(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRCAT_ADDR.get() {
+            self.handle_strcat(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRNCAT_ADDR.get() {
+            self.handle_strncat(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MEMCMP_ADDR.get() {
+            self.handle_memcmp(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRCMP_ADDR.get() {
+            self.handle_strcmp(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRNCMP_ADDR.get() {
+            self.handle_strncmp(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRCOLL_ADDR.get() {
+            self.handle_strcoll(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MEMCHR_ADDR.get() {
+            self.handle_memchr(cpu)?;
+            return Ok(true);
+        }
+
         if pc == self.memset_addr.get() {
             self.handle_memset(cpu)?;
             return Ok(true);
         }
 
+        if pc == STRLEN_ADDR.get() {
+            self.handle_strlen(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRSTR_ADDR.get() {
+            self.handle_strstr(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == SPRINTF_ADDR.get() {
+            self.handle_sprintf(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == ATOI_ADDR.get() {
+            self.handle_atoi(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == STRTOUL_ADDR.get() {
+            self.handle_strtoul(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_PRINTF_ADDR.get() {
+            self.handle_mr_printf(cpu)?;
+            return Ok(true);
+        }
+
         if pc == MR_GET_SCREEN_INFO_ADDR.get() {
             self.handle_mr_get_screen_info(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_TEST_COM_ADDR.get() {
+            self.handle_mr_test_com(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_TEST_COM1_ADDR.get() {
+            self.handle_mr_test_com1(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_READ_FILE_ADDR.get() {
+            self.handle_mr_read_file(cpu)?;
             return Ok(true);
         }
 
@@ -636,6 +879,247 @@ impl ExtHost {
         Ok(())
     }
 
+    fn handle_memmove<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let src = cpu.regs().reg(1);
+        let len = cpu.regs().reg(2);
+        let mut bytes = Vec::with_capacity(len as usize);
+        for offset in 0..len {
+            bytes.push(
+                cpu.memory()
+                    .read8(GuestAddr::new(src.wrapping_add(offset)))?,
+            );
+        }
+        for (index, byte) in bytes.into_iter().enumerate() {
+            cpu.memory_mut()
+                .write8(GuestAddr::new(dst.wrapping_add(index as u32)), byte)?;
+        }
+        cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strcpy<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let src = cpu.regs().reg(1);
+        let value = read_guest_c_string(cpu, src, 4096)?;
+        write_guest_c_string(cpu, dst, &value)?;
+        cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strncpy<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let src = cpu.regs().reg(1);
+        let len = cpu.regs().reg(2);
+        let mut offset = 0u32;
+        let mut terminated = false;
+        while offset < len {
+            let byte = if terminated {
+                0
+            } else {
+                let value = cpu
+                    .memory()
+                    .read8(GuestAddr::new(src.wrapping_add(offset)))?;
+                if value == 0 {
+                    terminated = true;
+                }
+                value
+            };
+            cpu.memory_mut()
+                .write8(GuestAddr::new(dst.wrapping_add(offset)), byte)?;
+            offset = offset.wrapping_add(1);
+        }
+        cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strcat<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let src = cpu.regs().reg(1);
+        let dst_len = guest_strlen(cpu.memory(), dst, 4096)?;
+        let mut src_offset = 0u32;
+        loop {
+            let byte = cpu
+                .memory()
+                .read8(GuestAddr::new(src.wrapping_add(src_offset)))?;
+            cpu.memory_mut().write8(
+                GuestAddr::new(dst.wrapping_add(dst_len).wrapping_add(src_offset)),
+                byte,
+            )?;
+            if byte == 0 {
+                break;
+            }
+            src_offset = src_offset.wrapping_add(1);
+        }
+        cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strncat<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let src = cpu.regs().reg(1);
+        let max_len = cpu.regs().reg(2);
+        let dst_len = guest_strlen(cpu.memory(), dst, 4096)?;
+        let mut copied = 0u32;
+        while copied < max_len {
+            let byte = cpu
+                .memory()
+                .read8(GuestAddr::new(src.wrapping_add(copied)))?;
+            if byte == 0 {
+                break;
+            }
+            cpu.memory_mut().write8(
+                GuestAddr::new(dst.wrapping_add(dst_len).wrapping_add(copied)),
+                byte,
+            )?;
+            copied = copied.wrapping_add(1);
+        }
+        cpu.memory_mut().write8(
+            GuestAddr::new(dst.wrapping_add(dst_len).wrapping_add(copied)),
+            0,
+        )?;
+        cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_memcmp<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let left = cpu.regs().reg(0);
+        let right = cpu.regs().reg(1);
+        let len = cpu.regs().reg(2);
+        let mut ret = 0i32;
+        for offset in 0..len {
+            let a = cpu
+                .memory()
+                .read8(GuestAddr::new(left.wrapping_add(offset)))?;
+            let b = cpu
+                .memory()
+                .read8(GuestAddr::new(right.wrapping_add(offset)))?;
+            if a != b {
+                ret = a as i32 - b as i32;
+                break;
+            }
+        }
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strcmp<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let ret =
+            compare_guest_c_strings(cpu.memory(), cpu.regs().reg(0), cpu.regs().reg(1), None)?;
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strncmp<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let ret = compare_guest_c_strings(
+            cpu.memory(),
+            cpu.regs().reg(0),
+            cpu.regs().reg(1),
+            Some(cpu.regs().reg(2)),
+        )?;
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strcoll<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        self.handle_strcmp(cpu)
+    }
+
+    fn handle_memchr<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let ptr = cpu.regs().reg(0);
+        let target = cpu.regs().reg(1) as u8;
+        let len = cpu.regs().reg(2);
+        let mut found = 0u32;
+        for offset in 0..len {
+            let byte = cpu
+                .memory()
+                .read8(GuestAddr::new(ptr.wrapping_add(offset)))?;
+            if byte == target {
+                found = ptr.wrapping_add(offset);
+                break;
+            }
+        }
+        cpu.regs_mut().set_reg(0, found);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strlen<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let len = guest_strlen(cpu.memory(), cpu.regs().reg(0), 4096)?;
+        cpu.regs_mut().set_reg(0, len);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strstr<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let haystack_addr = cpu.regs().reg(0);
+        let needle_addr = cpu.regs().reg(1);
+        let haystack = read_guest_c_string(cpu, haystack_addr, 4096)?;
+        let needle = read_guest_c_string(cpu, needle_addr, 4096)?;
+        let ret = haystack
+            .find(&needle)
+            .map(|index| haystack_addr.wrapping_add(index as u32))
+            .unwrap_or(0);
+        cpu.regs_mut().set_reg(0, ret);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_sprintf<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let dst = cpu.regs().reg(0);
+        let fmt = cpu.regs().reg(1);
+        let rendered = format_guest_string(cpu, fmt, 2)?;
+        write_guest_c_string(cpu, dst, &rendered)?;
+        cpu.regs_mut().set_reg(0, rendered.len() as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_atoi<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let value = parse_guest_i32(&read_guest_c_string(cpu, cpu.regs().reg(0), 256)?);
+        cpu.regs_mut().set_reg(0, value as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_strtoul<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
+        let nptr = cpu.regs().reg(0);
+        let endptr = cpu.regs().reg(1);
+        let base = cpu.regs().reg(2);
+        let raw = read_guest_c_string(cpu, nptr, 256)?;
+        let (value, consumed) = parse_guest_strtoul(&raw, base);
+        if endptr != 0 {
+            cpu.memory_mut()
+                .write32(GuestAddr::new(endptr), nptr.wrapping_add(consumed as u32))?;
+        }
+        cpu.regs_mut().set_reg(0, value);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_mr_printf<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let fmt = cpu.regs().reg(0);
+        let rendered = format_guest_string(cpu, fmt, 1)?;
+        self.last_log_message = Some(rendered.clone());
+        if self.verbose {
+            println!("[guest-printf] {rendered}");
+        }
+        cpu.regs_mut().set_reg(0, rendered.len() as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
     fn handle_memset<B: MemoryBus>(&self, cpu: &mut Cpu<B>) -> Result<(), MemoryAccessError> {
         if self.verbose {
             println!(
@@ -656,6 +1140,197 @@ impl ExtHost {
         }
 
         cpu.regs_mut().set_reg(0, dst);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_mr_test_com<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let input0 = cpu.regs().reg(1) as i32;
+        let input1 = cpu.regs().reg(2);
+        println!("[host-testcom] code={} input1=0x{:X}", input0, input1);
+        let ret = match input0 {
+            1 => self
+                .uptime_epoch
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u32::MAX)) as u32,
+            7 | 8 => input1,
+            9 => {
+                let rw_base = cpu
+                    .memory()
+                    .read32(GuestAddr::new(self.mr_c_function_p_addr.get()))?;
+                if rw_base != 0 {
+                    let app_info_ptr = cpu.memory().read32(GuestAddr::new(
+                        rw_base.wrapping_add(HELPER_APP_INFO_PTR_OFFSET),
+                    ))?;
+                    if app_info_ptr != 0 {
+                        cpu.memory_mut()
+                            .write32(GuestAddr::new(app_info_ptr.wrapping_add(12)), input1)?;
+                    }
+                }
+                0
+            }
+            100 => self.memory_manager_min_free,
+            101 => self.memory_manager_peak_used,
+            102 => self.current_memory_manager_snapshot().left,
+            300 => {
+                cpu.memory_mut().write32(
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_SOUND_ON_CELL_OFFSET),
+                    input1,
+                )?;
+                0
+            }
+            301 => {
+                cpu.memory_mut().write32(
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_SHAKE_ON_CELL_OFFSET),
+                    input1,
+                )?;
+                0
+            }
+            302 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current | MR_FLAGS_RI)?;
+                0
+            }
+            303 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current & !MR_FLAGS_RI)?;
+                0
+            }
+            304 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current | MR_FLAGS_EI)?;
+                0
+            }
+            305 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current & !MR_FLAGS_EI)?;
+                0
+            }
+            3629 if input1 == 2913 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current | MR_FLAGS_BI)?;
+                0
+            }
+            3921 if input1 == 98352 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current | MR_FLAGS_AI)?;
+                0
+            }
+            3251 if input1 == 648826 => {
+                let cell = internal_data_cell_addr(self.mr_table_addr, BI_CELL_OFFSET);
+                let current = cpu.memory().read32(cell)?;
+                cpu.memory_mut().write32(cell, current & !MR_FLAGS_AI)?;
+                0
+            }
+            _ => 0,
+        };
+        cpu.regs_mut().set_reg(0, ret);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_mr_test_com1<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let input0 = cpu.regs().reg(1) as i32;
+        println!(
+            "[host-testcom1] code={} input1=0x{:X} len=0x{:X}",
+            input0,
+            cpu.regs().reg(2),
+            cpu.regs().reg(3)
+        );
+        let input1 = cpu.regs().reg(2);
+        let len = cpu.regs().reg(3);
+
+        match input0 {
+            2 => {
+                let ram_file_cell =
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_RAM_FILE_PTR_CELL_OFFSET);
+                let ram_file_len_cell =
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_RAM_FILE_LEN_CELL_OFFSET);
+                cpu.memory_mut().write32(ram_file_cell, input1)?;
+                cpu.memory_mut().write32(ram_file_len_cell, len)?;
+            }
+            3 => {
+                let value = read_guest_c_string(cpu, input1, LEGACY_FILENAME_BUFFER_LEN)?;
+                write_guest_c_string_to_memory(
+                    cpu.memory_mut(),
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_OLD_PACK_FILENAME_BUF_OFFSET),
+                    &value,
+                    LEGACY_FILENAME_BUFFER_LEN,
+                )?;
+                write_guest_c_string_to_memory(
+                    cpu.memory_mut(),
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_OLD_START_FILENAME_BUF_OFFSET),
+                    DEFAULT_START_FILE_NAME,
+                    LEGACY_FILENAME_BUFFER_LEN,
+                )?;
+            }
+            4 => {
+                let value = read_guest_c_string(cpu, input1, LEGACY_FILENAME_BUFFER_LEN)?;
+                write_guest_c_string_to_memory(
+                    cpu.memory_mut(),
+                    legacy_runtime_addr(self.mr_table_addr, LEGACY_START_FILEPARAMETER_BUF_OFFSET),
+                    &value,
+                    LEGACY_FILENAME_BUFFER_LEN,
+                )?;
+            }
+            5 | 6 | 9 => {}
+            _ => {}
+        }
+
+        cpu.regs_mut().set_reg(0, 0);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_mr_read_file<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let name_addr = cpu.regs().reg(0);
+        let filelen_ptr = cpu.regs().reg(1);
+        let name = read_guest_c_string(cpu, name_addr, 1024)?;
+        let key = name.replace('\\', "/");
+        let bytes = if let Some(bytes) = self.package_files.get(&key) {
+            Some(bytes.clone())
+        } else if let Some(bytes) = self.package_files.get(name.as_str()) {
+            Some(bytes.clone())
+        } else {
+            let path = self.resolve_guest_path(&name);
+            fs::read(path).ok()
+        };
+
+        let ptr = if let Some(bytes) = bytes {
+            if let Some(ptr) = self.alloc_ext(cpu.memory_mut(), bytes.len() as u32)? {
+                for (index, byte) in bytes.iter().enumerate() {
+                    cpu.memory_mut()
+                        .write8(GuestAddr::new(ptr.wrapping_add(index as u32)), *byte)?;
+                }
+                if filelen_ptr != 0 {
+                    cpu.memory_mut()
+                        .write32(GuestAddr::new(filelen_ptr), bytes.len() as u32)?;
+                }
+                ptr
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        cpu.regs_mut().set_reg(0, ptr);
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
         Ok(())
     }
@@ -799,6 +1474,17 @@ impl ExtHost {
 
     fn memory_manager_free_bytes(&self) -> u32 {
         self.heap_blocks.iter().map(|block| block.len).sum()
+    }
+
+    fn current_memory_manager_snapshot(&self) -> MemoryManagerSnapshot {
+        MemoryManagerSnapshot {
+            base: memory_manager_base(),
+            len: memory_manager_total_len(),
+            end: memory_manager_end(),
+            left: self.memory_manager_free_bytes(),
+            min: self.memory_manager_min_free,
+            top: self.memory_manager_peak_used,
+        }
     }
 
     fn sync_memory_manager_cells<B: MemoryBus>(
@@ -1413,6 +2099,109 @@ fn internal_data_cell_addr(mr_table_addr: GuestAddr, offset: u32) -> GuestAddr {
     )
 }
 
+fn legacy_runtime_addr(mr_table_addr: GuestAddr, offset: u32) -> GuestAddr {
+    reserved_guest_addr(
+        mr_table_addr,
+        MR_TABLE_LEGACY_RUNTIME_OFFSET.wrapping_add(offset),
+    )
+}
+
+fn clear_guest_bytes<B: MemoryBus>(
+    memory: &mut B,
+    addr: GuestAddr,
+    len: usize,
+) -> Result<(), MemoryAccessError> {
+    for index in 0..len {
+        memory.write8(GuestAddr::new(addr.get().wrapping_add(index as u32)), 0)?;
+    }
+    Ok(())
+}
+
+fn write_guest_c_string_to_memory<B: MemoryBus>(
+    memory: &mut B,
+    addr: GuestAddr,
+    value: &str,
+    capacity: usize,
+) -> Result<(), MemoryAccessError> {
+    clear_guest_bytes(memory, addr, capacity)?;
+    let bytes = value.as_bytes();
+    let limit = bytes.len().min(capacity.saturating_sub(1));
+    for (index, byte) in bytes.iter().take(limit).enumerate() {
+        memory.write8(GuestAddr::new(addr.get().wrapping_add(index as u32)), *byte)?;
+    }
+    Ok(())
+}
+
+fn seed_legacy_runtime_data<B: MemoryBus>(
+    memory: &mut B,
+    mr_table_addr: GuestAddr,
+) -> Result<(), MemoryAccessError> {
+    let screen_buf_ptr_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SCREEN_BUF_PTR_CELL_OFFSET);
+    let screen_w_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SCREEN_W_CELL_OFFSET);
+    let screen_h_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SCREEN_H_CELL_OFFSET);
+    let screen_bit_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SCREEN_BIT_CELL_OFFSET);
+    let ram_file_ptr_cell = legacy_runtime_addr(mr_table_addr, LEGACY_RAM_FILE_PTR_CELL_OFFSET);
+    let ram_file_len_cell = legacy_runtime_addr(mr_table_addr, LEGACY_RAM_FILE_LEN_CELL_OFFSET);
+    let sound_on_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SOUND_ON_CELL_OFFSET);
+    let shake_on_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SHAKE_ON_CELL_OFFSET);
+    let pack_filename = legacy_runtime_addr(mr_table_addr, LEGACY_PACK_FILENAME_BUF_OFFSET);
+    let start_filename = legacy_runtime_addr(mr_table_addr, LEGACY_START_FILENAME_BUF_OFFSET);
+    let old_pack_filename = legacy_runtime_addr(mr_table_addr, LEGACY_OLD_PACK_FILENAME_BUF_OFFSET);
+    let old_start_filename =
+        legacy_runtime_addr(mr_table_addr, LEGACY_OLD_START_FILENAME_BUF_OFFSET);
+    let start_fileparameter =
+        legacy_runtime_addr(mr_table_addr, LEGACY_START_FILEPARAMETER_BUF_OFFSET);
+    let mr_entry = legacy_runtime_addr(mr_table_addr, LEGACY_ENTRY_BUF_OFFSET);
+
+    for (slot_offset, value) in [
+        (MR_SCREEN_BUF_OFFSET, screen_buf_ptr_cell.get()),
+        (MR_SCREEN_W_OFFSET, screen_w_cell.get()),
+        (MR_SCREEN_H_OFFSET, screen_h_cell.get()),
+        (MR_SCREEN_BIT_OFFSET, screen_bit_cell.get()),
+        (PACK_FILENAME_OFFSET, pack_filename.get()),
+        (START_FILENAME_OFFSET, start_filename.get()),
+        (OLD_PACK_FILENAME_OFFSET, old_pack_filename.get()),
+        (OLD_START_FILENAME_OFFSET, old_start_filename.get()),
+        (MR_RAM_FILE_OFFSET, ram_file_ptr_cell.get()),
+        (MR_RAM_FILE_LEN_OFFSET, ram_file_len_cell.get()),
+        (MR_SOUND_ON_OFFSET, sound_on_cell.get()),
+        (MR_SHAKE_ON_OFFSET, shake_on_cell.get()),
+        (START_FILEPARAMETER_OFFSET, start_fileparameter.get()),
+        (MR_ENTRY_OFFSET, mr_entry.get()),
+    ] {
+        memory.write32(
+            GuestAddr::new(mr_table_addr.get().wrapping_add(slot_offset)),
+            value,
+        )?;
+    }
+
+    for cell in [
+        screen_buf_ptr_cell,
+        screen_w_cell,
+        screen_h_cell,
+        screen_bit_cell,
+        ram_file_ptr_cell,
+        ram_file_len_cell,
+        sound_on_cell,
+        shake_on_cell,
+    ] {
+        memory.write32(cell, 0)?;
+    }
+
+    for buffer in [
+        pack_filename,
+        start_filename,
+        old_pack_filename,
+        old_start_filename,
+        start_fileparameter,
+        mr_entry,
+    ] {
+        clear_guest_bytes(memory, buffer, LEGACY_FILENAME_BUFFER_LEN)?;
+    }
+
+    Ok(())
+}
+
 fn seed_internal_runtime_tables<B: MemoryBus>(
     memory: &mut B,
     mr_table_addr: GuestAddr,
@@ -1515,6 +2304,210 @@ fn align_up(value: u32, align: u32) -> u32 {
     }
     let mask = align - 1;
     value.wrapping_add(mask) & !mask
+}
+
+fn guest_strlen<B: MemoryBus>(
+    memory: &B,
+    addr: u32,
+    max_len: usize,
+) -> Result<u32, MemoryAccessError> {
+    let mut len = 0u32;
+    while (len as usize) < max_len {
+        let byte = memory.read8(GuestAddr::new(addr.wrapping_add(len)))?;
+        if byte == 0 {
+            break;
+        }
+        len = len.wrapping_add(1);
+    }
+    Ok(len)
+}
+
+fn compare_guest_c_strings<B: MemoryBus>(
+    memory: &B,
+    left: u32,
+    right: u32,
+    limit: Option<u32>,
+) -> Result<i32, MemoryAccessError> {
+    let mut offset = 0u32;
+    loop {
+        if let Some(limit) = limit {
+            if offset >= limit {
+                return Ok(0);
+            }
+        }
+        let a = memory.read8(GuestAddr::new(left.wrapping_add(offset)))?;
+        let b = memory.read8(GuestAddr::new(right.wrapping_add(offset)))?;
+        if a != b {
+            return Ok(a as i32 - b as i32);
+        }
+        if a == 0 {
+            return Ok(0);
+        }
+        offset = offset.wrapping_add(1);
+    }
+}
+
+fn guest_variadic_arg<B: MemoryBus>(
+    cpu: &Cpu<B>,
+    fixed_arg_count: usize,
+    var_index: usize,
+) -> Result<u32, MemoryAccessError> {
+    let absolute_index = fixed_arg_count + var_index;
+    if absolute_index < 4 {
+        Ok(cpu.regs().reg(absolute_index))
+    } else {
+        let stack_index = absolute_index - 4;
+        cpu.memory().read32(GuestAddr::new(
+            cpu.regs()
+                .sp()
+                .wrapping_add((stack_index as u32).wrapping_mul(4)),
+        ))
+    }
+}
+
+fn format_guest_string<B: MemoryBus>(
+    cpu: &Cpu<B>,
+    fmt_addr: u32,
+    fixed_arg_count: usize,
+) -> Result<String, MemoryAccessError> {
+    let fmt = read_guest_c_string(cpu, fmt_addr, 4096)?;
+    let mut out = String::new();
+    let mut chars = fmt.chars().peekable();
+    let mut arg_index = 0usize;
+
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        if matches!(chars.peek(), Some('%')) {
+            chars.next();
+            out.push('%');
+            continue;
+        }
+
+        let mut spec = None;
+        while let Some(&next) = chars.peek() {
+            if next.is_ascii_digit() || matches!(next, '-' | '+' | ' ' | '#' | '0' | 'l' | 'h') {
+                chars.next();
+                continue;
+            }
+            spec = chars.next();
+            break;
+        }
+
+        match spec.unwrap_or('%') {
+            's' => {
+                let ptr = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push_str(&read_guest_c_string(cpu, ptr, 4096)?);
+            }
+            'c' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push(char::from_u32(value & 0xFF).unwrap_or('\0'));
+            }
+            'd' | 'i' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)? as i32;
+                arg_index += 1;
+                out.push_str(&value.to_string());
+            }
+            'u' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push_str(&value.to_string());
+            }
+            'x' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push_str(&format!("{value:x}"));
+            }
+            'X' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push_str(&format!("{value:X}"));
+            }
+            'p' => {
+                let value = guest_variadic_arg(cpu, fixed_arg_count, arg_index)?;
+                arg_index += 1;
+                out.push_str(&format!("0x{value:X}"));
+            }
+            other => {
+                out.push('%');
+                out.push(other);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_guest_i32(raw: &str) -> i32 {
+    let trimmed = raw.trim_start();
+    let mut end = 0usize;
+    for (index, ch) in trimmed.char_indices() {
+        if index == 0 && matches!(ch, '+' | '-') {
+            end = ch.len_utf8();
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            end = index + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    trimmed.get(..end).unwrap_or("").parse::<i32>().unwrap_or(0)
+}
+
+fn parse_guest_strtoul(raw: &str, base: u32) -> (u32, usize) {
+    let bytes = raw.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() && (bytes[index] as char).is_ascii_whitespace() {
+        index += 1;
+    }
+    let start = index;
+    if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+        index += 1;
+    }
+
+    let mut actual_base = base;
+    if actual_base == 0 {
+        actual_base = 10;
+        if index + 1 < bytes.len()
+            && bytes[index] == b'0'
+            && matches!(bytes[index + 1], b'x' | b'X')
+        {
+            actual_base = 16;
+            index += 2;
+        } else if index < bytes.len() && bytes[index] == b'0' {
+            actual_base = 8;
+            index += 1;
+        }
+    } else if actual_base == 16
+        && index + 1 < bytes.len()
+        && bytes[index] == b'0'
+        && matches!(bytes[index + 1], b'x' | b'X')
+    {
+        index += 2;
+    }
+
+    let digits_start = index;
+    let mut value = 0u32;
+    while index < bytes.len() {
+        let ch = bytes[index] as char;
+        let Some(digit) = ch.to_digit(actual_base) else {
+            break;
+        };
+        value = value
+            .saturating_mul(actual_base)
+            .saturating_add(digit as u32);
+        index += 1;
+    }
+
+    if digits_start == index {
+        return (0, start);
+    }
+    (value, index)
 }
 
 fn read_guest_c_string<B: MemoryBus>(
