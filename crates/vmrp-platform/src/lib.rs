@@ -82,6 +82,11 @@ const MR_SCREEN_BUF_OFFSET: u32 = 0x16C;
 const MR_SCREEN_W_OFFSET: u32 = 0x170;
 const MR_SCREEN_H_OFFSET: u32 = 0x174;
 const MR_SCREEN_BIT_OFFSET: u32 = 0x178;
+const MR_BITMAP_OFFSET: u32 = 0x17C;
+const MR_TILE_OFFSET: u32 = 0x180;
+const MR_MAP_OFFSET: u32 = 0x184;
+const MR_SOUND_OFFSET: u32 = 0x188;
+const MR_SPRITE_OFFSET: u32 = 0x18C;
 const PACK_FILENAME_OFFSET: u32 = 0x190;
 const START_FILENAME_OFFSET: u32 = 0x194;
 const OLD_PACK_FILENAME_OFFSET: u32 = 0x198;
@@ -120,7 +125,21 @@ const LEGACY_OLD_PACK_FILENAME_BUF_OFFSET: u32 = 0x140;
 const LEGACY_OLD_START_FILENAME_BUF_OFFSET: u32 = 0x1C0;
 const LEGACY_START_FILEPARAMETER_BUF_OFFSET: u32 = 0x240;
 const LEGACY_ENTRY_BUF_OFFSET: u32 = 0x2C0;
+const LEGACY_BITMAP_BUF_OFFSET: u32 = 0x340;
+const LEGACY_TILE_BUF_OFFSET: u32 = 0x530;
+const LEGACY_MAP_BUF_OFFSET: u32 = 0x570;
+const LEGACY_SOUND_BUF_OFFSET: u32 = 0x580;
+const LEGACY_SPRITE_BUF_OFFSET: u32 = 0x5C0;
 const LEGACY_FILENAME_BUFFER_LEN: usize = 128;
+const LEGACY_BITMAP_STRUCT_LEN: usize = 16;
+const LEGACY_BITMAP_COUNT: usize = 31;
+const LEGACY_TILE_STRUCT_LEN: usize = 20;
+const LEGACY_TILE_COUNT: usize = 3;
+const LEGACY_MAP_PTR_COUNT: usize = 3;
+const LEGACY_SOUND_STRUCT_LEN: usize = 12;
+const LEGACY_SOUND_COUNT: usize = 5;
+const LEGACY_SPRITE_STRUCT_LEN: usize = 4;
+const LEGACY_SPRITE_COUNT: usize = 10;
 const DEFAULT_START_FILE_NAME: &str = "start.mr";
 const MR_FLAGS_BI: u32 = 1;
 const MR_FLAGS_AI: u32 = 1 << 1;
@@ -2144,6 +2163,11 @@ fn seed_legacy_runtime_data<B: MemoryBus>(
     let ram_file_len_cell = legacy_runtime_addr(mr_table_addr, LEGACY_RAM_FILE_LEN_CELL_OFFSET);
     let sound_on_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SOUND_ON_CELL_OFFSET);
     let shake_on_cell = legacy_runtime_addr(mr_table_addr, LEGACY_SHAKE_ON_CELL_OFFSET);
+    let bitmap = legacy_runtime_addr(mr_table_addr, LEGACY_BITMAP_BUF_OFFSET);
+    let tile = legacy_runtime_addr(mr_table_addr, LEGACY_TILE_BUF_OFFSET);
+    let map = legacy_runtime_addr(mr_table_addr, LEGACY_MAP_BUF_OFFSET);
+    let sound = legacy_runtime_addr(mr_table_addr, LEGACY_SOUND_BUF_OFFSET);
+    let sprite = legacy_runtime_addr(mr_table_addr, LEGACY_SPRITE_BUF_OFFSET);
     let pack_filename = legacy_runtime_addr(mr_table_addr, LEGACY_PACK_FILENAME_BUF_OFFSET);
     let start_filename = legacy_runtime_addr(mr_table_addr, LEGACY_START_FILENAME_BUF_OFFSET);
     let old_pack_filename = legacy_runtime_addr(mr_table_addr, LEGACY_OLD_PACK_FILENAME_BUF_OFFSET);
@@ -2158,6 +2182,11 @@ fn seed_legacy_runtime_data<B: MemoryBus>(
         (MR_SCREEN_W_OFFSET, screen_w_cell.get()),
         (MR_SCREEN_H_OFFSET, screen_h_cell.get()),
         (MR_SCREEN_BIT_OFFSET, screen_bit_cell.get()),
+        (MR_BITMAP_OFFSET, bitmap.get()),
+        (MR_TILE_OFFSET, tile.get()),
+        (MR_MAP_OFFSET, map.get()),
+        (MR_SOUND_OFFSET, sound.get()),
+        (MR_SPRITE_OFFSET, sprite.get()),
         (PACK_FILENAME_OFFSET, pack_filename.get()),
         (START_FILENAME_OFFSET, start_filename.get()),
         (OLD_PACK_FILENAME_OFFSET, old_pack_filename.get()),
@@ -2187,6 +2216,20 @@ fn seed_legacy_runtime_data<B: MemoryBus>(
     ] {
         memory.write32(cell, 0)?;
     }
+
+    clear_guest_bytes(
+        memory,
+        bitmap,
+        LEGACY_BITMAP_STRUCT_LEN * LEGACY_BITMAP_COUNT,
+    )?;
+    clear_guest_bytes(memory, tile, LEGACY_TILE_STRUCT_LEN * LEGACY_TILE_COUNT)?;
+    clear_guest_bytes(memory, map, 4 * LEGACY_MAP_PTR_COUNT)?;
+    clear_guest_bytes(memory, sound, LEGACY_SOUND_STRUCT_LEN * LEGACY_SOUND_COUNT)?;
+    clear_guest_bytes(
+        memory,
+        sprite,
+        LEGACY_SPRITE_STRUCT_LEN * LEGACY_SPRITE_COUNT,
+    )?;
 
     for buffer in [
         pack_filename,

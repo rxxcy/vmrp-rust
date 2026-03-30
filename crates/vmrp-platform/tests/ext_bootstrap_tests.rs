@@ -341,6 +341,54 @@ fn bootstrap_maps_legacy_runtime_data_slots() {
 }
 
 #[test]
+fn bootstrap_maps_legacy_media_runtime_slots() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+
+    let bitmap_addr = memory.read32(GuestAddr::new(0x18017C)).unwrap();
+    let tile_addr = memory.read32(GuestAddr::new(0x180180)).unwrap();
+    let map_addr = memory.read32(GuestAddr::new(0x180184)).unwrap();
+    let sound_addr = memory.read32(GuestAddr::new(0x180188)).unwrap();
+    let sprite_addr = memory.read32(GuestAddr::new(0x18018C)).unwrap();
+
+    for addr in [bitmap_addr, tile_addr, map_addr, sound_addr, sprite_addr] {
+        assert_ne!(addr, 0);
+        assert_ne!(addr, 0x181140);
+    }
+
+    for offset in (0..((31 * 16) as u32)).step_by(4) {
+        assert_eq!(
+            memory.read32(GuestAddr::new(bitmap_addr.wrapping_add(offset))).unwrap(),
+            0
+        );
+    }
+    for offset in (0..((3 * 20) as u32)).step_by(4) {
+        assert_eq!(
+            memory.read32(GuestAddr::new(tile_addr.wrapping_add(offset))).unwrap(),
+            0
+        );
+    }
+    for offset in (0..((3 * 4) as u32)).step_by(4) {
+        assert_eq!(
+            memory.read32(GuestAddr::new(map_addr.wrapping_add(offset))).unwrap(),
+            0
+        );
+    }
+    for offset in (0..((5 * 12) as u32)).step_by(4) {
+        assert_eq!(
+            memory.read32(GuestAddr::new(sound_addr.wrapping_add(offset))).unwrap(),
+            0
+        );
+    }
+    for offset in (0..((10 * 4) as u32)).step_by(4) {
+        assert_eq!(
+            memory.read32(GuestAddr::new(sprite_addr.wrapping_add(offset))).unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
 fn bootstrap_keeps_safe_stub_for_other_unresolved_function_slots() {
     let (cpu, _host) = new_bootstrapped_real_ext_cpu();
 

@@ -967,7 +967,7 @@ fn dump_helper_state(memory: &TestMemory, c_function_p: GuestAddr, label: &str) 
     println!("{label}_ext_chunk=0x{ext_chunk:X}");
     println!("{label}_stack=0x{stack:X}");
     if rw_base != 0 {
-        for offset in [0x20u32, 0x24, 0x1BC, 0x1C0] {
+        for offset in [0x20u32, 0x24, 0x104, 0x108, 0x10C, 0x110, 0x168, 0x1A8, 0x1AC, 0x220, 0x224, 0x1BC, 0x1C0] {
             let value = memory
                 .read32(GuestAddr::new(rw_base.wrapping_add(offset)))
                 .unwrap_or(0);
