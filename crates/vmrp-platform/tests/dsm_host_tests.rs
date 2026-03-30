@@ -752,8 +752,8 @@ fn dsm_draw_bitmap_refreshes_host_framebuffer_region() {
 
     memory.write16(GuestAddr::new(0x191000), 0x1111).unwrap();
     memory.write16(GuestAddr::new(0x191002), 0x2222).unwrap();
-    memory.write16(GuestAddr::new(0x1911E0), 0x3333).unwrap();
-    memory.write16(GuestAddr::new(0x1911E2), 0x4444).unwrap();
+    memory.write16(GuestAddr::new(0x191004), 0x3333).unwrap();
+    memory.write16(GuestAddr::new(0x191006), 0x4444).unwrap();
     memory.write32(GuestAddr::new(0x192000), 2).unwrap();
 
     let mut cpu = Cpu::new(memory);
@@ -811,6 +811,43 @@ fn dsm_draw_bitmap_marks_dirty_region() {
     assert_eq!(host.take_dirty_region(), None);
 }
 
+#[test]
+fn dsm_draw_bitmap_uses_source_local_coordinates_for_offset_destination() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+
+    memory.write16(GuestAddr::new(0x191000), 0x0101).unwrap();
+    memory.write16(GuestAddr::new(0x191002), 0x0202).unwrap();
+    memory.write16(GuestAddr::new(0x191004), 0x0303).unwrap();
+    memory.write16(GuestAddr::new(0x191006), 0x0404).unwrap();
+    memory.write32(GuestAddr::new(0x192000), 2).unwrap();
+
+    let mut cpu = Cpu::new(memory);
+    let draw_pc = cpu.memory().read32(GuestAddr::new(0x190068)).unwrap();
+
+    cpu.regs_mut().set_pc(draw_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_sp(0x192000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 5);
+    cpu.regs_mut().set_reg(2, 7);
+    cpu.regs_mut().set_reg(3, 2);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    let framebuffer = host.screen_buffer();
+    let top_left = 7 * 240 + 5;
+    let top_right = top_left + 1;
+    let bottom_left = top_left + 240;
+    let bottom_right = bottom_left + 1;
+    assert_eq!(framebuffer[top_left], 0x0101);
+    assert_eq!(framebuffer[top_right], 0x0202);
+    assert_eq!(framebuffer[bottom_left], 0x0303);
+    assert_eq!(framebuffer[bottom_right], 0x0404);
+}
+
 
 
 #[test]
@@ -849,4 +886,5 @@ fn host_mr_malloc_uses_memory_manager_region_and_reuses_freed_block() {
 
     assert_eq!(second, first);
 }
+
 

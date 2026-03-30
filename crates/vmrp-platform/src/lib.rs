@@ -1077,7 +1077,7 @@ impl ExtHost {
                             continue;
                         }
 
-                        let src_index = xx as u32 + yy as u32 * SCREEN_WIDTH as u32;
+                        let src_index = i as u32 + j as u32 * w as u32;
                         let pixel = cpu.memory().read16(GuestAddr::new(
                             bmp_ptr.wrapping_add(src_index.wrapping_mul(2)),
                         ))?;
@@ -1258,6 +1258,7 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
+
 
 
 

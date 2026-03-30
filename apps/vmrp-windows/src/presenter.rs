@@ -34,6 +34,10 @@ const MR_MOUSE_UP: i32 = 3;
 const MR_MOUSE_MOVE: i32 = 12;
 const MR_EVENT_EXIT: i32 = 8;
 
+fn should_keep_window_open(closed: bool) -> bool {
+    !closed
+}
+
 pub fn copy_rgb565_region_to_bgra(
     source: &[u16],
     width: usize,
@@ -81,6 +85,7 @@ pub struct WindowPresenter {
     pixels: Vec<u8>,
     pending_events: Vec<GuestInputEvent>,
     has_presented_frame: bool,
+    closed: bool,
 }
 
 #[cfg(windows)]
@@ -212,7 +217,7 @@ impl WindowPresenter {
     }
 
     pub fn should_stay_open(&self) -> bool {
-        !self.closed && self.has_presented_frame
+        should_keep_window_open(self.closed)
     }
 }
 
@@ -225,6 +230,7 @@ impl WindowPresenter {
             pixels: vec![0; width * height * 4],
             pending_events: Vec::new(),
             has_presented_frame: false,
+            closed: false,
         })
     }
 
@@ -240,7 +246,7 @@ impl WindowPresenter {
     }
 
     pub fn should_stay_open(&self) -> bool {
-        !self.closed && self.has_presented_frame
+        should_keep_window_open(self.closed)
     }
 }
 
@@ -535,8 +541,8 @@ unsafe extern "system" {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_rgb565_region_to_bgra, translate_win32_key_event, translate_win32_pointer_event,
-        DirtyRect, GuestInputEvent,
+        copy_rgb565_region_to_bgra, should_keep_window_open, translate_win32_key_event,
+        translate_win32_pointer_event, DirtyRect, GuestInputEvent,
         MR_EVENT_EXIT, MR_KEY_0, MR_KEY_POWER, MR_KEY_PRESS, MR_KEY_RELEASE, MR_KEY_SELECT,
         MR_KEY_UP, MR_MOUSE_DOWN, MR_MOUSE_MOVE, MR_MOUSE_UP, VK_ESCAPE, VK_RETURN, VK_UP,
         WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
@@ -669,7 +675,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn window_loop_stays_alive_until_presenter_is_closed() {
+        assert!(should_keep_window_open(false));
+        assert!(!should_keep_window_open(true));
+    }
+
     fn pack_point(x: u16, y: u16) -> isize {
         ((y as u32) << 16 | x as u32) as isize
     }
 }
+
