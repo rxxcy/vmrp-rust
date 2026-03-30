@@ -169,6 +169,18 @@ struct HostDir {
     scratch_ptr: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FreeBlock {
+    start: u32,
+    len: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HostAllocation {
+    raw_addr: u32,
+    requested_len: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HostDateTime {
     year: u16,
@@ -205,11 +217,13 @@ pub struct ExtHost {
     pub alloc_base: GuestAddr,
     pub alloc_size: u32,
     ext_helper_addr: Option<GuestAddr>,
-    next_alloc: u32,
     next_callback: u32,
+    heap_blocks: Vec<FreeBlock>,
+    ext_allocations: BTreeMap<u32, HostAllocation>,
     dsm_callbacks: BTreeMap<u32, DsmHostFn>,
     working_dir: PathBuf,
     verbose: bool,
+    last_log_message: Option<String>,
     exit_requested: bool,
     rng_state: u32,
     pending_timer_delay_ms: Option<u32>,
@@ -247,14 +261,19 @@ impl ExtHost {
             alloc_base,
             alloc_size,
             ext_helper_addr: None,
-            next_alloc: alloc_base.get(),
             next_callback: alloc_base
                 .get()
                 .wrapping_add(alloc_size)
                 .wrapping_add(0x1000),
+            heap_blocks: vec![FreeBlock {
+                start: DEFAULT_LAYOUT.memory_manager_address().get(),
+                len: DEFAULT_LAYOUT.memory_manager_size(),
+            }],
+            ext_allocations: BTreeMap::new(),
             dsm_callbacks: BTreeMap::new(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
+            last_log_message: None,
             exit_requested: false,
             rng_state: 0x1234_5678,
             pending_timer_delay_ms: None,
@@ -278,7 +297,12 @@ impl ExtHost {
     }
 
     pub fn reset_alloc(&mut self) {
-        self.next_alloc = self.alloc_base.get();
+        self.heap_blocks.clear();
+        self.heap_blocks.push(FreeBlock {
+            start: DEFAULT_LAYOUT.memory_manager_address().get(),
+            len: DEFAULT_LAYOUT.memory_manager_size(),
+        });
+        self.ext_allocations.clear();
     }
 
     pub fn set_working_dir<P: Into<PathBuf>>(&mut self, path: P) {
@@ -287,6 +311,10 @@ impl ExtHost {
 
     pub fn set_verbose(&mut self, verbose: bool) {
         self.verbose = verbose;
+    }
+
+    pub fn take_last_log_message(&mut self) -> Option<String> {
+        self.last_log_message.take()
     }
 
     pub fn exit_requested(&self) -> bool {
@@ -389,12 +417,12 @@ impl ExtHost {
         }
 
         if pc == self.mr_malloc_addr.get() {
-            self.handle_mr_malloc(cpu);
+            self.handle_mr_malloc(cpu)?;
             return Ok(true);
         }
 
         if pc == self.mr_free_addr.get() {
-            self.handle_mr_free(cpu);
+            self.handle_mr_free(cpu)?;
             return Ok(true);
         }
 
@@ -442,16 +470,26 @@ impl ExtHost {
         Ok(())
     }
 
-    fn handle_mr_malloc<B: MemoryBus>(&mut self, cpu: &mut Cpu<B>) {
+    fn handle_mr_malloc<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
         let requested = cpu.regs().reg(0).max(1);
-        let out = self.alloc(requested).unwrap_or(0);
+        let out = self.alloc_ext(cpu.memory_mut(), requested)?.unwrap_or(0);
         cpu.regs_mut().set_reg(0, out);
         return_to_lr(cpu);
+        Ok(())
     }
 
-    fn handle_mr_free<B: MemoryBus>(&self, cpu: &mut Cpu<B>) {
+    fn handle_mr_free<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let ptr = cpu.regs().reg(0);
+        self.free_ext(ptr);
         cpu.regs_mut().set_reg(0, 0);
         return_to_lr(cpu);
+        Ok(())
     }
 
     fn handle_mr_realloc<B: MemoryBus>(
@@ -461,18 +499,26 @@ impl ExtHost {
         let old_ptr = cpu.regs().reg(0);
         let new_len = cpu.regs().reg(1);
 
-        let out = if new_len == 0 {
+        let out = if old_ptr == 0 {
+            if new_len == 0 {
+                0
+            } else {
+                self.alloc_ext(cpu.memory_mut(), new_len)?.unwrap_or(0)
+            }
+        } else if new_len == 0 {
+            self.free_ext(old_ptr);
             0
-        } else if old_ptr == 0 {
-            self.alloc(new_len).unwrap_or(0)
-        } else if let Some(new_ptr) = self.alloc(new_len) {
-            for offset in 0..new_len {
+        } else if let Some(new_ptr) = self.alloc_ext(cpu.memory_mut(), new_len)? {
+            let old_len = self.ext_requested_len(old_ptr, cpu.memory())?;
+            let copy_len = old_len.min(new_len);
+            for offset in 0..copy_len {
                 let byte = cpu
                     .memory()
                     .read8(GuestAddr::new(old_ptr.wrapping_add(offset)))?;
                 cpu.memory_mut()
                     .write8(GuestAddr::new(new_ptr.wrapping_add(offset)), byte)?;
             }
+            self.free_ext(old_ptr);
             new_ptr
         } else {
             0
@@ -516,19 +562,112 @@ impl ExtHost {
         Ok(())
     }
 
-    fn alloc(&mut self, size: u32) -> Option<u32> {
-        let aligned = align_up(size, 4);
-        let end = self.alloc_base.get().wrapping_add(self.alloc_size);
-        if self.next_alloc > end {
-            return None;
+    fn alloc_raw(&mut self, size: u32) -> Option<u32> {
+        let aligned = align_up(size.max(1), 8);
+        let index = self.heap_blocks.iter().position(|block| block.len >= aligned)?;
+        let block = self.heap_blocks[index];
+        let ptr = block.start;
+        if block.len == aligned {
+            self.heap_blocks.remove(index);
+        } else {
+            self.heap_blocks[index].start = block.start.wrapping_add(aligned);
+            self.heap_blocks[index].len = block.len.wrapping_sub(aligned);
         }
-        if aligned > end.wrapping_sub(self.next_alloc) {
-            return None;
+        Some(ptr)
+    }
+
+    fn free_raw(&mut self, addr: u32, size: u32) {
+        let aligned = align_up(size.max(1), 8);
+        let pool_start = DEFAULT_LAYOUT.memory_manager_address().get();
+        let pool_end = pool_start.wrapping_add(DEFAULT_LAYOUT.memory_manager_size());
+        if addr < pool_start || addr >= pool_end {
+            return;
+        }
+        let Some(end) = addr.checked_add(aligned) else {
+            return;
+        };
+        if end > pool_end {
+            return;
         }
 
-        let ptr = self.next_alloc;
-        self.next_alloc = self.next_alloc.wrapping_add(aligned);
-        Some(ptr)
+        let insert_at = self
+            .heap_blocks
+            .iter()
+            .position(|block| block.start > addr)
+            .unwrap_or(self.heap_blocks.len());
+        self.heap_blocks.insert(
+            insert_at,
+            FreeBlock {
+                start: addr,
+                len: aligned,
+            },
+        );
+
+        let mut cursor = insert_at;
+        if cursor > 0 {
+            let prev = self.heap_blocks[cursor - 1];
+            let current = self.heap_blocks[cursor];
+            if prev.start.wrapping_add(prev.len) == current.start {
+                self.heap_blocks[cursor - 1].len = prev.len.wrapping_add(current.len);
+                self.heap_blocks.remove(cursor);
+                cursor -= 1;
+            }
+        }
+        if cursor + 1 < self.heap_blocks.len() {
+            let current = self.heap_blocks[cursor];
+            let next = self.heap_blocks[cursor + 1];
+            if current.start.wrapping_add(current.len) == next.start {
+                self.heap_blocks[cursor].len = current.len.wrapping_add(next.len);
+                self.heap_blocks.remove(cursor + 1);
+            }
+        }
+    }
+
+    fn alloc_ext<B: MemoryBus>(
+        &mut self,
+        memory: &mut B,
+        size: u32,
+    ) -> Result<Option<u32>, MemoryAccessError> {
+        if size == 0 {
+            return Ok(None);
+        }
+        let total = size.saturating_add(4);
+        let Some(raw_addr) = self.alloc_raw(total) else {
+            return Ok(None);
+        };
+        memory.write32(GuestAddr::new(raw_addr), size)?;
+        let user_addr = raw_addr.wrapping_add(4);
+        self.ext_allocations.insert(
+            user_addr,
+            HostAllocation {
+                raw_addr,
+                requested_len: size,
+            },
+        );
+        Ok(Some(user_addr))
+    }
+
+    fn free_ext(&mut self, ptr: u32) {
+        if ptr == 0 {
+            return;
+        }
+        if let Some(allocation) = self.ext_allocations.remove(&ptr) {
+            self.free_raw(allocation.raw_addr, allocation.requested_len.saturating_add(4));
+        }
+    }
+
+    fn ext_requested_len<B: MemoryBus>(
+        &self,
+        ptr: u32,
+        memory: &B,
+    ) -> Result<u32, MemoryAccessError> {
+        if let Some(allocation) = self.ext_allocations.get(&ptr) {
+            Ok(allocation.requested_len)
+        } else if ptr >= 4 {
+            memory.read32(GuestAddr::new(ptr.wrapping_sub(4)))
+        } else {
+            Ok(0)
+        }
     }
 
     fn register_dsm_callback<B: MemoryBus>(
@@ -555,6 +694,7 @@ impl ExtHost {
             DsmHostFn::Log => {
                 let msg_addr = cpu.regs().reg(0);
                 let msg = read_guest_c_string(cpu, msg_addr, 4096)?;
+                self.last_log_message = Some(msg.clone());
                 if self.verbose && !msg.is_empty() {
                     println!("[guest-log] {msg}");
                 }
@@ -576,16 +716,21 @@ impl ExtHost {
             DsmHostFn::MemGet => {
                 let mem_base_ptr = cpu.regs().reg(0);
                 let mem_len_ptr = cpu.regs().reg(1);
-                let mem_base = DEFAULT_LAYOUT.memory_manager_address().get();
                 let mem_len = DEFAULT_LAYOUT.memory_manager_size().min(DSM_MEM_GET_SIZE);
-                cpu.memory_mut()
-                    .write32(GuestAddr::new(mem_base_ptr), mem_base)?;
-                cpu.memory_mut()
-                    .write32(GuestAddr::new(mem_len_ptr), mem_len)?;
-                cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+                if let Some(mem_base) = self.alloc_ext(cpu.memory_mut(), mem_len)? {
+                    cpu.memory_mut()
+                        .write32(GuestAddr::new(mem_base_ptr), mem_base)?;
+                    cpu.memory_mut()
+                        .write32(GuestAddr::new(mem_len_ptr), mem_len)?;
+                    cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+                } else {
+                    cpu.regs_mut().set_reg(0, MR_FAILED as u32);
+                }
                 return_to_lr(cpu);
             }
             DsmHostFn::MemFree => {
+                let mem = cpu.regs().reg(0);
+                self.free_ext(mem);
                 cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
                 return_to_lr(cpu);
             }
@@ -873,7 +1018,7 @@ impl ExtHost {
                 }
 
                 if need_alloc {
-                    let allocated = self.alloc(260).unwrap_or(0);
+                    let allocated = self.alloc_raw(260).unwrap_or(0);
                     if let Some(dir) = self.dirs.get_mut(&handle) {
                         if dir.scratch_ptr == 0 {
                             dir.scratch_ptr = allocated;
@@ -966,9 +1111,17 @@ impl ExtHost {
 
         let path = PathBuf::from(raw);
         if path.is_absolute() {
-            path
+            return path;
+        }
+
+        let relative = raw
+            .strip_prefix("mythroad/")
+            .or_else(|| raw.strip_prefix("mythroad\\"))
+            .unwrap_or(raw);
+        if relative.is_empty() {
+            self.working_dir.clone()
         } else {
-            self.working_dir.join(Path::new(raw))
+            self.working_dir.join(Path::new(relative))
         }
     }
 }
@@ -1105,4 +1258,6 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (u16, u8, u8) {
     let year = year + if month <= 2 { 1 } else { 0 };
     (year as u16, month as u8, day as u8)
 }
+
+
 

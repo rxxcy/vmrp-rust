@@ -195,7 +195,7 @@ pub fn execute_instruction<B: MemoryBus>(
             } else {
                 regs.reg(rm)
             };
-            let (right, shifter_carry) = apply_register_shift(rm_value, shift, regs.cpsr().carry());
+            let (right, shifter_carry) = apply_register_shift(rm_value, shift, regs.cpsr().carry(), regs);
 
             match op {
                 DataProcessingOp::And => {
@@ -213,6 +213,35 @@ pub fn execute_instruction<B: MemoryBus>(
                             regs.cpsr_mut().set_carry(carry);
                         }
                     }
+                }
+                DataProcessingOp::Eor => {
+                    let result = left ^ right;
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        if let Some(carry) = shifter_carry {
+                            regs.cpsr_mut().set_carry(carry);
+                        }
+                    }
+                }
+            DataProcessingOp::Tst => {
+                    let result = left & right;
+                    regs.cpsr_mut().update_nz(result);
+                    if let Some(carry) = shifter_carry {
+                        regs.cpsr_mut().set_carry(carry);
+                    }
+                    let next_pc = pc.wrapping_add(4);
+                    regs.set_pc(next_pc);
+                    register_writes.push(RegisterWrite {
+                        index: 15,
+                        value: next_pc,
+                    });
                 }
                 DataProcessingOp::Orr => {
                     let result = left | right;
@@ -259,6 +288,21 @@ pub fn execute_instruction<B: MemoryBus>(
                         regs.cpsr_mut().update_nzcv_add(left, right, result);
                     }
                 }
+                DataProcessingOp::Adc => {
+                    let (result, carry, overflow) = add_with_carry(left, right, regs.cpsr().carry());
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nz(result);
+                        regs.cpsr_mut().set_carry(carry);
+                        regs.cpsr_mut().set_overflow(overflow);
+                    }
+                }
                 DataProcessingOp::Sub => {
                     let result = left.wrapping_sub(right);
                     write_result_and_advance(
@@ -270,6 +314,19 @@ pub fn execute_instruction<B: MemoryBus>(
                     );
                     if set_flags {
                         regs.cpsr_mut().update_nzcv_sub(left, right, result);
+                    }
+                }
+                DataProcessingOp::Rsb => {
+                    let result = right.wrapping_sub(left);
+                    write_result_and_advance(
+                        regs,
+                        rd,
+                        result,
+                        pc.wrapping_add(4),
+                        &mut register_writes,
+                    );
+                    if set_flags {
+                        regs.cpsr_mut().update_nzcv_sub(right, left, result);
                     }
                 }
                 DataProcessingOp::Mov => {
@@ -323,6 +380,33 @@ pub fn execute_instruction<B: MemoryBus>(
                         value: next_pc,
                     });
                 }
+            }
+        }
+        DecodedInstruction::Multiply {
+            accumulate,
+            set_flags,
+            rd,
+            rn,
+            rm,
+            rs,
+        } => {
+            let lhs = regs.reg(rm);
+            let rhs = regs.reg(rs);
+            let mut result = lhs.wrapping_mul(rhs);
+            if accumulate {
+                result = result.wrapping_add(regs.reg(rn));
+            }
+
+            write_result_and_advance(
+                regs,
+                rd,
+                result,
+                pc.wrapping_add(4),
+                &mut register_writes,
+            );
+
+            if set_flags {
+                regs.cpsr_mut().update_nz(result);
             }
         }
         DecodedInstruction::MultiplyLong {
@@ -416,7 +500,7 @@ pub fn execute_instruction<B: MemoryBus>(
             } else {
                 regs.reg(rm)
             };
-            let (offset, _) = apply_register_shift(rm_value, shift, regs.cpsr().carry());
+            let (offset, _) = apply_register_shift(rm_value, shift, regs.cpsr().carry(), regs);
             execute_arm_single_data_transfer(
                 memory,
                 regs,
@@ -424,6 +508,67 @@ pub fn execute_instruction<B: MemoryBus>(
                 mode,
                 load,
                 byte,
+                base,
+                rd,
+                offset,
+                add_offset,
+                pre_index,
+                write_back,
+                &mut register_writes,
+            )?;
+        }
+        DecodedInstruction::HalfwordTransferImmediate {
+            load,
+            signed,
+            halfword,
+            base,
+            rd,
+            offset,
+            add_offset,
+            pre_index,
+            write_back,
+        } => {
+            execute_arm_halfword_transfer(
+                memory,
+                regs,
+                pc,
+                mode,
+                load,
+                signed,
+                halfword,
+                base,
+                rd,
+                offset,
+                add_offset,
+                pre_index,
+                write_back,
+                &mut register_writes,
+            )?;
+        }
+        DecodedInstruction::HalfwordTransferRegister {
+            load,
+            signed,
+            halfword,
+            base,
+            rd,
+            rm,
+            add_offset,
+            pre_index,
+            write_back,
+        } => {
+            let offset = if rm == 15 && mode == ExecutionMode::Arm {
+                pc.wrapping_add(8)
+            } else {
+                regs.reg(rm)
+            };
+            execute_arm_halfword_transfer(
+                memory,
+                regs,
+                pc,
+                mode,
+                load,
+                signed,
+                halfword,
                 base,
                 rd,
                 offset,
@@ -461,7 +606,9 @@ pub fn execute_instruction<B: MemoryBus>(
             rn,
             rd,
             immediate,
-        } => match op {
+        } => {
+            let immediate_carry = arm_immediate_carry(opcode, regs.cpsr().carry());
+            match op {
             DataProcessingOp::Mov => {
                 write_result_and_advance(
                     regs,
@@ -472,6 +619,7 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nz(immediate);
+                    regs.cpsr_mut().set_carry(immediate_carry);
                 }
             }
             DataProcessingOp::Mvn => {
@@ -485,6 +633,7 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(immediate_carry);
                 }
             }
             DataProcessingOp::And => {
@@ -499,7 +648,35 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(immediate_carry);
                 }
+            }
+            DataProcessingOp::Eor => {
+                let left = regs.reg(rn);
+                let result = left ^ immediate;
+                write_result_and_advance(
+                    regs,
+                    rd,
+                    result,
+                    pc.wrapping_add(4),
+                    &mut register_writes,
+                );
+                if set_flags {
+                    regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(immediate_carry);
+                }
+            }
+            DataProcessingOp::Tst => {
+                let left = regs.reg(rn);
+                let result = left & immediate;
+                regs.cpsr_mut().update_nz(result);
+                regs.cpsr_mut().set_carry(immediate_carry);
+                let next_pc = pc.wrapping_add(4);
+                regs.set_pc(next_pc);
+                register_writes.push(RegisterWrite {
+                    index: 15,
+                    value: next_pc,
+                });
             }
             DataProcessingOp::Orr => {
                 let left = regs.reg(rn);
@@ -513,6 +690,7 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(immediate_carry);
                 }
             }
             DataProcessingOp::Bic => {
@@ -527,6 +705,7 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(immediate_carry);
                 }
             }
             DataProcessingOp::Add => {
@@ -543,6 +722,22 @@ pub fn execute_instruction<B: MemoryBus>(
                     regs.cpsr_mut().update_nzcv_add(left, immediate, result);
                 }
             }
+            DataProcessingOp::Adc => {
+                let left = regs.reg(rn);
+                let (result, carry, overflow) = add_with_carry(left, immediate, regs.cpsr().carry());
+                write_result_and_advance(
+                    regs,
+                    rd,
+                    result,
+                    pc.wrapping_add(4),
+                    &mut register_writes,
+                );
+                if set_flags {
+                    regs.cpsr_mut().update_nz(result);
+                    regs.cpsr_mut().set_carry(carry);
+                    regs.cpsr_mut().set_overflow(overflow);
+                }
+            }
             DataProcessingOp::Sub => {
                 let left = regs.reg(rn);
                 let result = left.wrapping_sub(immediate);
@@ -555,6 +750,20 @@ pub fn execute_instruction<B: MemoryBus>(
                 );
                 if set_flags {
                     regs.cpsr_mut().update_nzcv_sub(left, immediate, result);
+                }
+            }
+            DataProcessingOp::Rsb => {
+                let left = regs.reg(rn);
+                let result = immediate.wrapping_sub(left);
+                write_result_and_advance(
+                    regs,
+                    rd,
+                    result,
+                    pc.wrapping_add(4),
+                    &mut register_writes,
+                );
+                if set_flags {
+                    regs.cpsr_mut().update_nzcv_sub(immediate, left, result);
                 }
             }
             DataProcessingOp::Cmp => {
@@ -579,6 +788,7 @@ pub fn execute_instruction<B: MemoryBus>(
                     value: next_pc,
                 });
             }
+        }
         },
         DecodedInstruction::ThumbAddSub {
             sub,
@@ -662,7 +872,7 @@ pub fn execute_instruction<B: MemoryBus>(
         }
         DecodedInstruction::ThumbShiftImmediate { rd, rs, shift } => {
             let value = regs.reg(rs);
-            let (result, shifter_carry) = apply_register_shift(value, shift, regs.cpsr().carry());
+            let (result, shifter_carry) = apply_register_shift(value, shift, regs.cpsr().carry(), regs);
             regs.set_reg(rd, result);
             register_writes.push(RegisterWrite {
                 index: rd,
@@ -1184,7 +1394,7 @@ fn execute_arm_single_data_transfer<B: MemoryBus>(
         let value = if byte {
             memory.read8(GuestAddr::new(address))? as u32
         } else {
-            memory.read32(GuestAddr::new(address))?
+            read_arm_word(memory, address)?
         };
         if rd == 15 && !byte {
             let next_mode = if value & 1 != 0 {
@@ -1212,7 +1422,7 @@ fn execute_arm_single_data_transfer<B: MemoryBus>(
         if byte {
             memory.write8(GuestAddr::new(address), value as u8)?;
         } else {
-            memory.write32(GuestAddr::new(address), value)?;
+            write_arm_word(memory, address, value)?;
         }
     }
 
@@ -1236,7 +1446,131 @@ fn execute_arm_single_data_transfer<B: MemoryBus>(
     Ok(())
 }
 
-fn apply_register_shift(value: u32, shift: RegisterShift, carry_in: bool) -> (u32, Option<bool>) {
+fn execute_arm_halfword_transfer<B: MemoryBus>(
+    memory: &mut B,
+    regs: &mut CpuRegs,
+    pc: u32,
+    mode: ExecutionMode,
+    load: bool,
+    signed: bool,
+    halfword: bool,
+    base: usize,
+    rd: usize,
+    offset: u32,
+    add_offset: bool,
+    pre_index: bool,
+    write_back: bool,
+    register_writes: &mut Vec<RegisterWrite>,
+) -> Result<(), CpuError> {
+    let base_addr = if base == 15 && mode == ExecutionMode::Arm {
+        pc.wrapping_add(8)
+    } else {
+        regs.reg(base)
+    };
+    let offset_addr = if add_offset {
+        base_addr.wrapping_add(offset)
+    } else {
+        base_addr.wrapping_sub(offset)
+    };
+    let address = if pre_index { offset_addr } else { base_addr };
+
+    if load {
+        let value = if signed {
+            if halfword {
+                memory.read16(GuestAddr::new(address))? as i16 as i32 as u32
+            } else {
+                memory.read8(GuestAddr::new(address))? as i8 as i32 as u32
+            }
+        } else if halfword {
+            memory.read16(GuestAddr::new(address))? as u32
+        } else {
+            return Err(CpuError::UnimplementedInstruction {
+                pc,
+                mode,
+                opcode: 0,
+            });
+        };
+
+        regs.set_reg(rd, value);
+        register_writes.push(RegisterWrite { index: rd, value });
+    } else {
+        if signed || !halfword {
+            return Err(CpuError::UnimplementedInstruction {
+                pc,
+                mode,
+                opcode: 0,
+            });
+        }
+        memory.write16(GuestAddr::new(address), regs.reg(rd) as u16)?;
+    }
+
+    if !pre_index || write_back {
+        regs.set_reg(base, offset_addr);
+        register_writes.push(RegisterWrite {
+            index: base,
+            value: offset_addr,
+        });
+    }
+
+    if !(load && rd == 15) {
+        let next_pc = pc.wrapping_add(4);
+        regs.set_pc(next_pc);
+        register_writes.push(RegisterWrite {
+            index: 15,
+            value: next_pc,
+        });
+    }
+
+    Ok(())
+}
+
+fn read_arm_word<B: MemoryBus>(memory: &B, address: u32) -> Result<u32, CpuError> {
+    let aligned = address & !3;
+    let word = memory.read32(GuestAddr::new(aligned))?;
+    let rotate = (address & 3) * 8;
+    Ok(if rotate == 0 {
+        word
+    } else {
+        word.rotate_right(rotate)
+    })
+}
+
+fn write_arm_word<B: MemoryBus>(
+    memory: &mut B,
+    address: u32,
+    value: u32,
+) -> Result<(), CpuError> {
+    let aligned = address & !3;
+    memory.write32(GuestAddr::new(aligned), value)?;
+    Ok(())
+}
+
+fn add_with_carry(lhs: u32, rhs: u32, carry_in: bool) -> (u32, bool, bool) {
+    let carry = carry_in as u64;
+    let wide = lhs as u64 + rhs as u64 + carry;
+    let result = wide as u32;
+    let carry_out = wide > (u32::MAX as u64);
+    let overflow = (((lhs ^ result) & (rhs ^ result)) & 0x8000_0000) != 0;
+    (result, carry_out, overflow)
+}
+
+fn arm_immediate_carry(opcode: u32, carry_in: bool) -> bool {
+    let rotate = (((opcode >> 8) & 0xF) * 2) as u32;
+    if rotate == 0 {
+        carry_in
+    } else {
+        let imm8 = opcode & 0xFF;
+        let immediate = imm8.rotate_right(rotate);
+        ((immediate >> 31) & 1) != 0
+    }
+}
+
+fn apply_register_shift(
+    value: u32,
+    shift: RegisterShift,
+    carry_in: bool,
+    regs: &CpuRegs,
+) -> (u32, Option<bool>) {
     match shift {
         RegisterShift::Lsl(0) => (value, None),
         RegisterShift::Lsl(n) if n < 32 => {
@@ -1246,6 +1580,19 @@ fn apply_register_shift(value: u32, shift: RegisterShift, carry_in: bool) -> (u3
         }
         RegisterShift::Lsl(32) => (0, Some((value & 1) != 0)),
         RegisterShift::Lsl(_) => (0, Some(false)),
+        RegisterShift::LslRegister(rs) => {
+            let amount = (regs.reg(rs) & 0xFF) as u32;
+            match amount {
+                0 => (value, None),
+                1..=31 => {
+                    let out = value << amount;
+                    let carry = ((value >> (32 - amount)) & 1) != 0;
+                    (out, Some(carry))
+                }
+                32 => (0, Some((value & 1) != 0)),
+                _ => (0, Some(false)),
+            }
+        }
 
         RegisterShift::Lsr(32) => (0, Some(((value >> 31) & 1) != 0)),
         RegisterShift::Lsr(n) if n < 32 => {
@@ -1254,6 +1601,19 @@ fn apply_register_shift(value: u32, shift: RegisterShift, carry_in: bool) -> (u3
             (out, Some(carry))
         }
         RegisterShift::Lsr(_) => (0, Some(false)),
+        RegisterShift::LsrRegister(rs) => {
+            let amount = (regs.reg(rs) & 0xFF) as u32;
+            match amount {
+                0 => (value, None),
+                1..=31 => {
+                    let out = value >> amount;
+                    let carry = ((value >> (amount - 1)) & 1) != 0;
+                    (out, Some(carry))
+                }
+                32 => (0, Some(((value >> 31) & 1) != 0)),
+                _ => (0, Some(false)),
+            }
+        }
 
         RegisterShift::Asr(n) if n >= 32 => {
             if (value & 0x8000_0000) != 0 {
@@ -1266,6 +1626,19 @@ fn apply_register_shift(value: u32, shift: RegisterShift, carry_in: bool) -> (u3
             let out = ((value as i32) >> n) as u32;
             let carry = ((value >> (n - 1)) & 1) != 0;
             (out, Some(carry))
+        }
+        RegisterShift::AsrRegister(rs) => {
+            let amount = (regs.reg(rs) & 0xFF) as u32;
+            match amount {
+                0 => (value, None),
+                1..=31 => {
+                    let out = ((value as i32) >> amount) as u32;
+                    let carry = ((value >> (amount - 1)) & 1) != 0;
+                    (out, Some(carry))
+                }
+                _ if (value & 0x8000_0000) != 0 => (u32::MAX, Some(true)),
+                _ => (0, Some(false)),
+            }
         }
 
         RegisterShift::Ror(0) => {
@@ -1282,6 +1655,26 @@ fn apply_register_shift(value: u32, shift: RegisterShift, carry_in: bool) -> (u3
             };
             let carry = ((out >> 31) & 1) != 0;
             (out, Some(carry))
+        }
+        RegisterShift::RorRegister(rs) => {
+            let amount = (regs.reg(rs) & 0xFF) as u32;
+            match amount {
+                0 => (value, None),
+                _ => {
+                    let rot = amount % 32;
+                    let out = if rot == 0 {
+                        value
+                    } else {
+                        value.rotate_right(rot)
+                    };
+                    let carry = if rot == 0 {
+                        ((value >> 31) & 1) != 0
+                    } else {
+                        ((out >> 31) & 1) != 0
+                    };
+                    (out, Some(carry))
+                }
+            }
         }
     }
 }
@@ -1315,6 +1708,15 @@ fn thumb_condition_passed(cpsr: Cpsr, condition: Condition) -> bool {
         Condition::Other(_) => false,
     }
 }
+
+
+
+
+
+
+
+
+
 
 
 

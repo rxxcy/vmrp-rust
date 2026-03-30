@@ -142,6 +142,22 @@ fn bic_immediate_clears_masked_bits() {
 }
 
 #[test]
+fn tst_immediate_updates_flags_without_writing_register() {
+    let mut cpu = new_arm_cpu(0xE314_0E40);
+    cpu.regs_mut().set_reg(0, 0xDEAD_BEEF);
+    cpu.regs_mut().set_reg(4, 0x400);
+    cpu.regs_mut().cpsr_mut().set_carry(true);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(0), 0xDEAD_BEEF);
+    assert!(!cpu.regs().cpsr().zero());
+    assert!(!cpu.regs().cpsr().negative());
+    assert!(!cpu.regs().cpsr().carry());
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
 fn cmp_register_updates_flags_without_writing_result_register() {
     let mut cpu = new_arm_cpu(0xE152_0003);
     cpu.regs_mut().set_reg(0, 0xDEAD_BEEF);
@@ -156,5 +172,65 @@ fn cmp_register_updates_flags_without_writing_result_register() {
     assert_eq!(cpu.regs().pc(), 0x80004);
 }
 
+#[test]
+fn rsb_register_reverses_subtraction_order_and_updates_flags() {
+    let mut cpu = new_arm_cpu(0xE070_C1A1);
+    cpu.regs_mut().set_reg(0, 5);
+    cpu.regs_mut().set_reg(1, 0x20);
 
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(12), 0xFFFF_FFFF);
+    assert!(cpu.regs().cpsr().negative());
+    assert!(!cpu.regs().cpsr().carry());
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
+fn adc_register_adds_with_carry_in() {
+    let mut cpu = new_arm_cpu(0xE0A2_2002);
+    cpu.regs_mut().set_reg(2, 1);
+    cpu.regs_mut().cpsr_mut().set_carry(true);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(2), 3);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+#[test]
+fn mul_register_multiplies_rm_by_rs() {
+    let mut cpu = new_arm_cpu(0xE000_0091);
+    cpu.regs_mut().set_reg(0, 3);
+    cpu.regs_mut().set_reg(1, 4);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(0), 12);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
+fn bic_register_shifted_by_register_masks_bits() {
+    let mut cpu = new_arm_cpu(0xE1C3_1E32);
+    cpu.regs_mut().set_reg(2, 0xF0);
+    cpu.regs_mut().set_reg(3, 0xFFFF_FFFF);
+    cpu.regs_mut().set_lr(4);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(1), 0xFFFF_FFF0);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
+
+#[test]
+fn eor_register_xors_operands() {
+    let mut cpu = new_arm_cpu(0xE022_8008);
+    cpu.regs_mut().set_reg(2, 0xAAAA_5555);
+    cpu.regs_mut().set_reg(8, 0x1234_5678);
+
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs().reg(8), 0xB89E_032D);
+    assert_eq!(cpu.regs().pc(), 0x80004);
+}
 

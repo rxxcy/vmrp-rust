@@ -23,6 +23,7 @@ impl Condition {
 pub enum DataProcessingOp {
     Mov,
     And,
+    Eor,
     Orr,
     Add,
     Sub,
@@ -30,14 +31,21 @@ pub enum DataProcessingOp {
     Cmn,
     Mvn,
     Bic,
+    Tst,
+    Rsb,
+    Adc,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegisterShift {
     Lsl(u8),
+    LslRegister(usize),
     Lsr(u8),
+    LsrRegister(usize),
     Asr(u8),
+    AsrRegister(usize),
     Ror(u8),
+    RorRegister(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +106,14 @@ pub enum DecodedInstruction {
         rm: usize,
         shift: RegisterShift,
     },
+    Multiply {
+        accumulate: bool,
+        set_flags: bool,
+        rd: usize,
+        rn: usize,
+        rm: usize,
+        rs: usize,
+    },
     MultiplyLong {
         signed: bool,
         accumulate: bool,
@@ -124,6 +140,28 @@ pub enum DecodedInstruction {
         rd: usize,
         rm: usize,
         shift: RegisterShift,
+        add_offset: bool,
+        pre_index: bool,
+        write_back: bool,
+    },
+    HalfwordTransferImmediate {
+        load: bool,
+        signed: bool,
+        halfword: bool,
+        base: usize,
+        rd: usize,
+        offset: u32,
+        add_offset: bool,
+        pre_index: bool,
+        write_back: bool,
+    },
+    HalfwordTransferRegister {
+        load: bool,
+        signed: bool,
+        halfword: bool,
+        base: usize,
+        rd: usize,
+        rm: usize,
         add_offset: bool,
         pre_index: bool,
         write_back: bool,
@@ -247,6 +285,13 @@ pub fn decode_opcode(mode: ExecutionMode, opcode: u32) -> DecodedInstruction {
 
 pub mod arm;
 pub mod thumb;
+
+
+
+
+
+
+
 
 
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use vmrp_abi::MrpFile;
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
 use vmrp_platform::{ExtHost, HostScreenRegion, HostTimerCommand, FLAG_USE_UTF8_EDIT};
@@ -55,6 +56,16 @@ fn read_c_string(memory: &TestMemory, addr: u32) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
+fn read_bytes(memory: &TestMemory, addr: u32, len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|index| {
+            memory
+                .read8(GuestAddr::new(addr.wrapping_add(index as u32)))
+                .unwrap()
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 struct DateTimeFields {
     year: u16,
@@ -104,6 +115,26 @@ fn current_local_time() -> DateTimeFields {
         minute: system_time.minute as u8,
         second: system_time.second as u8,
     }
+}
+
+#[test]
+fn dsm_log_callback_exposes_last_guest_message() {
+    let mut host = new_host();
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, "diagnostic");
+
+    let mut cpu = Cpu::new(memory);
+    let log_pc = cpu.memory().read32(GuestAddr::new(0x190004)).unwrap();
+    cpu.regs_mut().set_pc(log_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(host.take_last_log_message(), Some(String::from("diagnostic")));
+    assert_eq!(host.take_last_log_message(), None);
 }
 
 #[test]
@@ -204,6 +235,91 @@ fn dsm_file_callbacks_open_read_close() {
 }
 
 #[test]
+fn dsm_open_strips_mythroad_prefix_from_guest_paths() {
+    let dir = make_temp_dir();
+    let file_path = dir.join("sample.bin");
+    fs::write(&file_path, b"ABCD").unwrap();
+
+    let mut host = new_host();
+    host.set_working_dir(&dir);
+
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, "mythroad/sample.bin");
+
+    let mut cpu = Cpu::new(memory);
+
+    let open_pc = cpu.memory().read32(GuestAddr::new(0x190030)).unwrap();
+    cpu.regs_mut().set_pc(open_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 1);
+    assert!(host.handle(&mut cpu).unwrap());
+    let fd = cpu.regs().reg(0) as i32;
+    assert!(fd >= 0);
+
+    let _ = fs::remove_file(file_path);
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn real_fallback_mrp_path() -> PathBuf {
+    PathBuf::from(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\ydqtwo.mrp")
+}
+
+#[test]
+fn dsm_real_mrp_open_seek_read_matches_start_mr_payload() {
+    let mrp_path = real_fallback_mrp_path();
+    let mrp = MrpFile::from_path(&mrp_path).unwrap();
+    let entry = mrp.entry("start.mr").unwrap();
+    let expected = mrp.file_bytes("start.mr").unwrap().to_vec();
+
+    let mut host = new_host();
+    host.set_working_dir(mrp_path.parent().unwrap());
+
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x400000);
+    host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
+        .unwrap();
+    write_c_string(&mut memory, 0x191000, "mythroad/ydqtwo.mrp");
+
+    let mut cpu = Cpu::new(memory);
+
+    let open_pc = cpu.memory().read32(GuestAddr::new(0x190030)).unwrap();
+    cpu.regs_mut().set_pc(open_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 0x191000);
+    cpu.regs_mut().set_reg(1, 1);
+    assert!(host.handle(&mut cpu).unwrap());
+    let fd = cpu.regs().reg(0) as i32;
+    assert!(fd >= 0);
+
+    let seek_pc = cpu.memory().read32(GuestAddr::new(0x190040)).unwrap();
+    cpu.regs_mut().set_pc(seek_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    cpu.regs_mut().set_reg(1, entry.offset());
+    cpu.regs_mut().set_reg(2, 0);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), entry.offset());
+
+    let read_pc = cpu.memory().read32(GuestAddr::new(0x190038)).unwrap();
+    cpu.regs_mut().set_pc(read_pc);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    cpu.regs_mut().set_reg(0, fd as u32);
+    cpu.regs_mut().set_reg(1, 0x192000);
+    cpu.regs_mut().set_reg(2, entry.len());
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), entry.len());
+
+    let actual = read_bytes(cpu.memory(), 0x192000, entry.len() as usize);
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn dsm_file_info_and_getlen_callbacks_report_metadata() {
     let dir = make_temp_dir();
     let file_path = dir.join("sample.bin");
@@ -256,7 +372,7 @@ fn dsm_directory_callbacks_iterate_entries() {
     let mut host = new_host();
     host.set_working_dir(&dir);
 
-    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     host.install_dsm_require_funcs(&mut memory, GuestAddr::new(0x190000), FLAG_USE_UTF8_EDIT)
         .unwrap();
     write_c_string(&mut memory, 0x191000, ".");
@@ -693,5 +809,44 @@ fn dsm_draw_bitmap_marks_dirty_region() {
         })
     );
     assert_eq!(host.take_dirty_region(), None);
+}
+
+
+
+#[test]
+fn host_mr_malloc_uses_memory_manager_region_and_reuses_freed_block() {
+    let mut host = new_host();
+    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let mut cpu = Cpu::new(memory);
+
+    cpu.regs_mut().set_pc(host.mr_malloc_addr.get());
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80000);
+    cpu.regs_mut().set_reg(0, 32);
+    assert!(host.handle(&mut cpu).unwrap());
+    let first = cpu.regs().reg(0);
+
+    let manager_base = DEFAULT_LAYOUT.memory_manager_address().get();
+    let manager_end = manager_base.wrapping_add(DEFAULT_LAYOUT.memory_manager_size());
+    assert!(
+        first >= manager_base && first < manager_end,
+        "mr_malloc should allocate from shared memory manager region: first=0x{first:X}, base=0x{manager_base:X}, end=0x{manager_end:X}"
+    );
+
+    cpu.regs_mut().set_pc(host.mr_free_addr.get());
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80004);
+    cpu.regs_mut().set_reg(0, first);
+    cpu.regs_mut().set_reg(1, 32);
+    assert!(host.handle(&mut cpu).unwrap());
+
+    cpu.regs_mut().set_pc(host.mr_malloc_addr.get());
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80008);
+    cpu.regs_mut().set_reg(0, 32);
+    assert!(host.handle(&mut cpu).unwrap());
+    let second = cpu.regs().reg(0);
+
+    assert_eq!(second, first);
 }
 

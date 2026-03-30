@@ -227,5 +227,74 @@ fn decodes_real_ext_byte_store_forms() {
         }
     ));
 }
+#[test]
+fn decodes_real_ext_mul() {
+    let mul = decode_arm_opcode(0xE0000091);
 
+    assert!(matches!(
+        mul,
+        DecodedInstruction::Multiply {
+            accumulate: false,
+            set_flags: false,
+            rd: 0,
+            rn: 0,
+            rm: 1,
+            rs: 0,
+        }
+    ));
+}
+
+#[test]
+fn decodes_real_ext_bic_register_shifted_by_register() {
+    let bic = decode_arm_opcode(0xE1C31E32);
+
+    assert!(matches!(
+        bic,
+        DecodedInstruction::DataProcessingRegister {
+            op: DataProcessingOp::Bic,
+            set_flags: false,
+            rn: 3,
+            rd: 1,
+            rm: 2,
+            shift: RegisterShift::LsrRegister(14),
+        }
+    ));
+}
+
+#[test]
+fn decodes_real_ext_eor_register() {
+    let eor = decode_arm_opcode(0xE0228008);
+
+    assert!(matches!(
+        eor,
+        DecodedInstruction::DataProcessingRegister {
+            op: DataProcessingOp::Eor,
+            set_flags: false,
+            rn: 2,
+            rd: 8,
+            rm: 8,
+            shift: RegisterShift::Lsl(0),
+        }
+    ));
+}
+
+#[test]
+fn decodes_halfword_transfer_immediate() {
+    let ldrh = decode_arm_opcode(0xE1D3_20B8);
+
+    assert!(matches!(
+        ldrh,
+        DecodedInstruction::HalfwordTransferImmediate {
+            load: true,
+            signed: false,
+            halfword: true,
+            base: 3,
+            rd: 2,
+            offset: 8,
+            add_offset: true,
+            pre_index: true,
+            write_back: false,
+        }
+    ));
+}
 

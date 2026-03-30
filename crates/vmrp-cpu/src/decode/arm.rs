@@ -8,10 +8,61 @@ const BRANCH_TAG: u32 = 0b101 << 25;
 const BX_MASK: u32 = 0x0FFF_FFF0;
 const BX_VALUE: u32 = 0x012F_FF10;
 const BLX_VALUE: u32 = 0x012F_FF30;
+const MULTIPLY_MASK: u32 = 0x0FC0_00F0;
+const MULTIPLY_VALUE: u32 = 0x0000_0090;
 const MULTIPLY_LONG_MASK: u32 = 0x0F80_00F0;
 const MULTIPLY_LONG_VALUE: u32 = 0x0080_0090;
 const BLX_IMMEDIATE_MASK: u32 = 0xFE00_0000;
 const BLX_IMMEDIATE_VALUE: u32 = 0xFA00_0000;
+
+fn is_halfword_transfer(opcode: u32) -> bool {
+    let immediate = ((opcode >> 22) & 1) != 0;
+    ((opcode >> 25) & 0x7) == 0
+        && ((opcode >> 7) & 1) != 0
+        && ((opcode >> 4) & 1) != 0
+        && ((opcode >> 5) & 0x3) != 0
+        && (immediate || ((opcode >> 8) & 0xF) == 0)
+}
+
+fn decode_halfword_transfer(opcode: u32) -> DecodedInstruction {
+    let op = ((opcode >> 5) & 0x3) as u8;
+    let load = ((opcode >> 20) & 1) != 0;
+    let signed = (op & 0b10) != 0;
+    let halfword = (op & 0b01) != 0;
+    let base = ((opcode >> 16) & 0xF) as usize;
+    let rd = ((opcode >> 12) & 0xF) as usize;
+    let add_offset = ((opcode >> 23) & 1) != 0;
+    let pre_index = ((opcode >> 24) & 1) != 0;
+    let write_back = ((opcode >> 21) & 1) != 0;
+
+    if ((opcode >> 22) & 1) != 0 {
+        let offset = (((opcode >> 8) & 0xF) << 4) | (opcode & 0xF);
+        DecodedInstruction::HalfwordTransferImmediate {
+            load,
+            signed,
+            halfword,
+            base,
+            rd,
+            offset,
+            add_offset,
+            pre_index,
+            write_back,
+        }
+    } else {
+        DecodedInstruction::HalfwordTransferRegister {
+            load,
+            signed,
+            halfword,
+            base,
+            rd,
+            rm: (opcode & 0xF) as usize,
+            add_offset,
+            pre_index,
+            write_back,
+        }
+    }
+}
+
 
 pub fn decode(opcode: u32) -> DecodedInstruction {
     if opcode & BX_MASK == BX_VALUE {
@@ -32,8 +83,16 @@ pub fn decode(opcode: u32) -> DecodedInstruction {
         return decode_multiply_long(opcode);
     }
 
+    if opcode & MULTIPLY_MASK == MULTIPLY_VALUE {
+        return decode_multiply(opcode);
+    }
+
     if opcode & BLX_IMMEDIATE_MASK == BLX_IMMEDIATE_VALUE {
         return decode_blx_immediate(opcode);
+    }
+
+    if is_halfword_transfer(opcode) {
+        return decode_halfword_transfer(opcode);
     }
     match opcode & (0b111 << 25) {
         BLOCK_TRANSFER_TAG => decode_block_transfer(opcode),
@@ -42,6 +101,17 @@ pub fn decode(opcode: u32) -> DecodedInstruction {
         SINGLE_DATA_TRANSFER_REGISTER_TAG => decode_single_data_transfer_register(opcode),
         BRANCH_TAG => decode_branch(opcode),
         _ => decode_data_processing_register(opcode),
+    }
+}
+
+fn decode_multiply(opcode: u32) -> DecodedInstruction {
+    DecodedInstruction::Multiply {
+        accumulate: ((opcode >> 21) & 1) != 0,
+        set_flags: ((opcode >> 20) & 1) != 0,
+        rd: ((opcode >> 16) & 0xF) as usize,
+        rn: ((opcode >> 12) & 0xF) as usize,
+        rs: ((opcode >> 8) & 0xF) as usize,
+        rm: (opcode & 0xF) as usize,
     }
 }
 
@@ -71,9 +141,13 @@ fn decode_data_processing_immediate(opcode: u32) -> DecodedInstruction {
     let op = match (opcode >> 21) & 0xF {
         0b1101 => DataProcessingOp::Mov,
         0b0000 => DataProcessingOp::And,
+        0b0001 => DataProcessingOp::Eor,
         0b1100 => DataProcessingOp::Orr,
         0b0100 => DataProcessingOp::Add,
+        0b0101 => DataProcessingOp::Adc,
         0b0010 => DataProcessingOp::Sub,
+        0b0011 => DataProcessingOp::Rsb,
+        0b1000 => DataProcessingOp::Tst,
         0b1010 => DataProcessingOp::Cmp,
         0b1011 => DataProcessingOp::Cmn,
         0b1111 => DataProcessingOp::Mvn,
@@ -104,10 +178,14 @@ fn decode_data_processing_register(opcode: u32) -> DecodedInstruction {
 
     let op = match (opcode >> 21) & 0xF {
         0b0000 => DataProcessingOp::And,
+        0b0001 => DataProcessingOp::Eor,
         0b1100 => DataProcessingOp::Orr,
         0b0100 => DataProcessingOp::Add,
+        0b0101 => DataProcessingOp::Adc,
         0b0010 => DataProcessingOp::Sub,
+        0b0011 => DataProcessingOp::Rsb,
         0b1101 => DataProcessingOp::Mov,
+        0b1000 => DataProcessingOp::Tst,
         0b1010 => DataProcessingOp::Cmp,
         0b1011 => DataProcessingOp::Cmn,
         0b1111 => DataProcessingOp::Mvn,
@@ -115,7 +193,7 @@ fn decode_data_processing_register(opcode: u32) -> DecodedInstruction {
         _ => return DecodedInstruction::Unknown { opcode },
     };
 
-    let Some(shift) = decode_immediate_shift(opcode) else {
+    let Some(shift) = decode_data_processing_shift(opcode) else {
         return DecodedInstruction::Unknown { opcode };
     };
 
@@ -143,7 +221,7 @@ fn decode_single_data_transfer_immediate(opcode: u32) -> DecodedInstruction {
 }
 
 fn decode_single_data_transfer_register(opcode: u32) -> DecodedInstruction {
-    let Some(shift) = decode_immediate_shift(opcode) else {
+    let Some(shift) = decode_load_store_shift(opcode) else {
         return DecodedInstruction::Unknown { opcode };
     };
 
@@ -180,7 +258,30 @@ fn decode_blx_immediate(opcode: u32) -> DecodedInstruction {
     DecodedInstruction::BranchLinkExchangeImmediate { offset }
 }
 
-fn decode_immediate_shift(opcode: u32) -> Option<RegisterShift> {
+fn decode_data_processing_shift(opcode: u32) -> Option<RegisterShift> {
+    let shift_type = (opcode >> 5) & 0x3;
+    if ((opcode >> 4) & 1) != 0 {
+        let rs = ((opcode >> 8) & 0xF) as usize;
+        Some(match shift_type {
+            0b00 => RegisterShift::LslRegister(rs),
+            0b01 => RegisterShift::LsrRegister(rs),
+            0b10 => RegisterShift::AsrRegister(rs),
+            0b11 => RegisterShift::RorRegister(rs),
+            _ => return None,
+        })
+    } else {
+        let shift_imm = ((opcode >> 7) & 0x1F) as u8;
+        Some(match shift_type {
+            0b00 => RegisterShift::Lsl(shift_imm),
+            0b01 => RegisterShift::Lsr(if shift_imm == 0 { 32 } else { shift_imm }),
+            0b10 => RegisterShift::Asr(if shift_imm == 0 { 32 } else { shift_imm }),
+            0b11 => RegisterShift::Ror(shift_imm),
+            _ => return None,
+        })
+    }
+}
+
+fn decode_load_store_shift(opcode: u32) -> Option<RegisterShift> {
     if ((opcode >> 4) & 1) != 0 {
         return None;
     }
@@ -194,5 +295,16 @@ fn decode_immediate_shift(opcode: u32) -> Option<RegisterShift> {
         _ => return None,
     })
 }
+
+
+
+
+
+
+
+
+
+
+
 
 

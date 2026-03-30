@@ -13,7 +13,7 @@ fn new_bootstrapped_real_ext_cpu() -> (Cpu<TestMemory>, ExtHost) {
     let ext = ExtFile::from_path(real_ext_path()).unwrap();
     let blob = ext.to_code_blob(DEFAULT_LAYOUT.code_address().get());
 
-    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     for (offset, byte) in blob.bytes().iter().enumerate() {
         let addr = GuestAddr::new(blob.load_address().get().wrapping_add(offset as u32));
         memory.write8(addr, *byte).unwrap();
@@ -114,7 +114,7 @@ fn bootstrap_seeds_mr_malloc_stub_for_indirect_call() {
 
 #[test]
 fn host_handles_memcpy_stub() {
-    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     let mut host = ExtHost::new(
         GuestAddr::new(0x181000),
         GuestAddr::new(0x182000),
@@ -150,7 +150,7 @@ fn host_handles_memcpy_stub() {
 
 #[test]
 fn host_handles_memset_stub() {
-    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     let mut host = ExtHost::new(
         GuestAddr::new(0x181000),
         GuestAddr::new(0x182000),
@@ -182,7 +182,7 @@ fn host_handles_memset_stub() {
 
 #[test]
 fn host_handles_mr_c_function_new_stub() {
-    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
     let mut host = ExtHost::new(
         GuestAddr::new(0x181000),
         GuestAddr::new(0x182000),
@@ -208,3 +208,4 @@ fn host_handles_mr_c_function_new_stub() {
     let helper = host.ext_helper_addr().unwrap();
     assert!(helper.get() >= 0x80000);
 }
+

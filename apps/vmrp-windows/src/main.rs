@@ -1,13 +1,14 @@
 mod presenter;
 
 use presenter::{DirtyRect, WindowPresenter};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 use vmrp_abi::{ExtFile, MrChunk, MrpDecodeError, MrpFile, MrpRuntimeAssets};
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
-use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
+use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, StepTrace, TestMemory};
 use vmrp_platform::{
     ExtBootstrap, ExtHost, HostScreenRegion, HostTimerCommand, FLAG_USE_UTF8_EDIT, MR_FAILED,
     VMRP_VER,
@@ -24,6 +25,9 @@ const MR_EVENT_CODE: i32 = -95;
 const WINDOW_TITLE: &str = "vmrp-rust";
 const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
+const RECENT_TRACE_CAPACITY: usize = 4096;
+const LOG_TRIGGER_TRACE_DUMP_LIMIT: usize = 2048;
+const FINAL_TRACE_DUMP_LIMIT: usize = 128;
 
 #[derive(Debug, Clone)]
 struct RunnerConfig {
@@ -198,6 +202,18 @@ fn helper_ext_search_paths(mrp_path: &str) -> Vec<std::path::PathBuf> {
     paths
 }
 
+fn guest_ram_size() -> u32 {
+    DEFAULT_LAYOUT
+        .memory_manager_address()
+        .get()
+        .wrapping_add(DEFAULT_LAYOUT.memory_manager_size())
+        .wrapping_sub(DEFAULT_LAYOUT.code_address().get())
+}
+
+fn default_stack_top() -> u32 {
+    DEFAULT_LAYOUT.stack_address().get() + DEFAULT_LAYOUT.stack_size()
+}
+
 fn load_runtime_assets(mrp: &MrpFile, mrp_path: &str) -> Result<MrpRuntimeAssets, String> {
     match mrp.runtime_assets() {
         Ok(assets) => Ok(assets),
@@ -256,7 +272,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     }
 
     let blob = ext.to_code_blob(DEFAULT_LAYOUT.code_address().get());
-    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x200000);
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), guest_ram_size());
 
     for (offset, byte) in blob.bytes().iter().enumerate() {
         let addr = GuestAddr::new(blob.load_address().get().wrapping_add(offset as u32));
@@ -314,7 +330,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     let mut cpu = Cpu::new(memory);
     cpu.regs_mut().set_pc(blob.entry().get());
     cpu.regs_mut().set_execution_mode(blob.mode());
-    cpu.regs_mut().set_sp(0x280000);
+    cpu.regs_mut().set_sp(default_stack_top());
 
     let ext_entry_code = std::env::var("VMRP_EXT_CODE")
         .ok()
@@ -455,6 +471,38 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     })
 }
 
+fn push_recent_trace_line(recent: &mut VecDeque<String>, capacity: usize, line: String) {
+    if capacity == 0 {
+        return;
+    }
+    if recent.len() == capacity {
+        recent.pop_front();
+    }
+    recent.push_back(line);
+}
+
+fn format_step_trace_line(label: &str, observed: usize, trace: &StepTrace) -> String {
+    format!(
+        "{label}_step[{observed}] mode={:?} pc=0x{:08X} op=0x{:08X}",
+        trace.mode, trace.pc, trace.opcode
+    )
+}
+
+fn should_dump_recent_trace_for_guest_log(msg: &str) -> bool {
+    ["invalid compressed data", "unzip err", "cannot read start.mr"]
+        .iter()
+        .any(|needle| msg.contains(needle))
+}
+
+fn dump_recent_trace(label: &str, recent: &VecDeque<String>, limit: usize) {
+    println!("stage={label} recent_trace_begin");
+    let start = recent.len().saturating_sub(limit);
+    for line in recent.iter().skip(start) {
+        println!("{line}");
+    }
+    println!("stage={label} recent_trace_end");
+}
+
 fn run_loop(
     runtime: &mut Runtime,
     cpu: &mut Cpu<TestMemory>,
@@ -466,8 +514,9 @@ fn run_loop(
     presenter: &mut Option<WindowPresenter>,
 ) -> StageResult {
     let mut observed = 0usize;
+    let mut recent = VecDeque::with_capacity(RECENT_TRACE_CAPACITY);
 
-    Runtime::run_stage(label, step_limit, || {
+    let stage = Runtime::run_stage(label, step_limit, || {
         if let Err(err) = drain_host_ui(runtime, host, presenter) {
             return RuntimeStepResult::Stop(err);
         }
@@ -492,11 +541,22 @@ fn run_loop(
         match host.handle(cpu) {
             Ok(true) => {
                 observed += 1;
+                let line = format!(
+                    "{label}_host_step[{observed}] pc=0x{:08X}",
+                    cpu.regs().pc()
+                );
+                push_recent_trace_line(&mut recent, RECENT_TRACE_CAPACITY, line.clone());
                 if verbose && observed <= trace_limit {
-                    println!("{label}_host_step[{observed}]=0x{:08X}", cpu.regs().pc());
+                    println!("{line}");
                 }
                 if let Err(err) = drain_host_ui(runtime, host, presenter) {
                     return RuntimeStepResult::Stop(err);
+                }
+                if let Some(msg) = host.take_last_log_message() {
+                    if verbose && should_dump_recent_trace_for_guest_log(&msg) && !recent.is_empty() {
+                        println!("stage={label} guest_log_trigger={msg}");
+                        dump_recent_trace(label, &recent, LOG_TRIGGER_TRACE_DUMP_LIMIT);
+                    }
                 }
                 return RuntimeStepResult::HostStep;
             }
@@ -506,21 +566,25 @@ fn run_loop(
             }
         }
 
-        let pre_pc = cpu.regs().pc();
         match cpu.step() {
             Ok(step) => {
                 observed += 1;
+                let line = format_step_trace_line(label, observed, &step.trace);
+                push_recent_trace_line(&mut recent, RECENT_TRACE_CAPACITY, line.clone());
                 if verbose && observed <= trace_limit {
-                    println!(
-                        "{label}_step[{observed}] pc=0x{pre_pc:08X} op=0x{:08X}",
-                        step.trace.opcode
-                    );
+                    println!("{line}");
                 }
                 RuntimeStepResult::GuestStep
             }
             Err(err) => RuntimeStepResult::Stop(format!("{err:?}")),
         }
-    })
+    });
+
+    if verbose && !recent.is_empty() && stage.stop_reason != "program returned to null pc" {
+        dump_recent_trace(label, &recent, FINAL_TRACE_DUMP_LIMIT);
+    }
+
+    stage
 }
 
 fn drain_host_ui(
@@ -687,7 +751,7 @@ fn setup_helper_call(
     } else {
         ExecutionMode::Arm
     });
-    cpu.regs_mut().set_sp(0x280000);
+    cpu.regs_mut().set_sp(default_stack_top());
     cpu.regs_mut().set_lr(0);
     cpu.regs_mut().set_reg(0, c_function_p.get());
     cpu.regs_mut().set_reg(1, code);
@@ -695,12 +759,18 @@ fn setup_helper_call(
     cpu.regs_mut().set_reg(3, input_len);
 }
 
+fn mrp_guest_filename(mrp_path: &str) -> String {
+    Path::new(mrp_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| mrp_path.to_string())
+}
 fn prepare_start_dsm_payload(
     memory: &mut TestMemory,
     mrp_path: &str,
 ) -> Result<u32, vmrp_cpu::MemoryAccessError> {
     let mut cursor = RUNTIME_DATA_ADDR;
-    let filename_ptr = write_c_string(memory, &mut cursor, mrp_path)?;
+    let filename_ptr = write_c_string(memory, &mut cursor, &mrp_guest_filename(mrp_path))?;
     let ext_ptr = write_c_string(memory, &mut cursor, "start.mr")?;
 
     let start_t_addr = RUNTIME_DATA_ADDR + 0x100;
@@ -751,10 +821,14 @@ fn write_c_string(
 #[cfg(test)]
 mod tests {
     use super::{
-        helper_ext_search_paths, parse_args_from, should_keep_waiting_for_host_events,
-        to_presenter_rect, ParseOutcome,
+        default_stack_top, format_step_trace_line, guest_ram_size, helper_ext_search_paths,
+        mrp_guest_filename, parse_args_from, push_recent_trace_line,
+        should_keep_waiting_for_host_events, to_presenter_rect, ParseOutcome,
     };
+    use std::collections::VecDeque;
     use crate::presenter::DirtyRect;
+    use vmrp_cpu::{ExecutionMode, StepTrace};
+    use vmrp_core::DEFAULT_LAYOUT;
     use vmrp_platform::HostScreenRegion;
 
     #[test]
@@ -813,4 +887,64 @@ mod tests {
             r"D:\opt\rust\vmrp\wasm\dist\fs\cfunction.ext"
         )));
     }
+    #[test]
+    fn guest_ram_size_covers_default_layout_through_memory_manager_end() {
+        let layout_end = DEFAULT_LAYOUT
+            .memory_manager_address()
+            .get()
+            .wrapping_add(DEFAULT_LAYOUT.memory_manager_size());
+        let ram_end = DEFAULT_LAYOUT
+            .code_address()
+            .get()
+            .wrapping_add(guest_ram_size());
+
+        assert_eq!(ram_end, layout_end);
+    }
+
+    #[test]
+    fn default_stack_top_matches_start_of_memory_manager_region() {
+        assert_eq!(default_stack_top(), DEFAULT_LAYOUT.memory_manager_address().get());
+    }
+
+    #[test]
+    fn mrp_guest_filename_strips_parent_directories() {
+        assert_eq!(
+            mrp_guest_filename(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\ydqtwo.mrp"),
+            "ydqtwo.mrp"
+        );
+    }
+
+    #[test]
+    fn recent_trace_buffer_keeps_only_latest_entries() {
+        let mut recent = VecDeque::new();
+        push_recent_trace_line(&mut recent, 2, String::from("line-1"));
+        push_recent_trace_line(&mut recent, 2, String::from("line-2"));
+        push_recent_trace_line(&mut recent, 2, String::from("line-3"));
+
+        assert_eq!(
+            recent.into_iter().collect::<Vec<_>>(),
+            vec![String::from("line-2"), String::from("line-3")]
+        );
+    }
+
+    #[test]
+    fn formatted_step_trace_includes_mode_pc_and_opcode() {
+        let rendered = format_step_trace_line(
+            "start_dsm",
+            17,
+            &StepTrace {
+                pc: 0x1234,
+                mode: ExecutionMode::Thumb,
+                opcode: 0xB500,
+                register_writes: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            rendered,
+            "start_dsm_step[17] mode=Thumb pc=0x00001234 op=0x0000B500"
+        );
+    }
 }
+
+
