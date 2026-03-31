@@ -78,6 +78,8 @@ const SPRINTF_ADDR: GuestAddr = GuestAddr::new(0x181500);
 const ATOI_ADDR: GuestAddr = GuestAddr::new(0x181510);
 const STRTOUL_ADDR: GuestAddr = GuestAddr::new(0x181520);
 const MR_PRINTF_ADDR: GuestAddr = GuestAddr::new(0x181530);
+
+pub const SEND_APP_EVENT_ADDR: GuestAddr = GuestAddr::new(0x181540);
 const MR_SCREEN_BUF_OFFSET: u32 = 0x16C;
 const MR_SCREEN_W_OFFSET: u32 = 0x170;
 const MR_SCREEN_H_OFFSET: u32 = 0x174;
@@ -320,6 +322,7 @@ impl ExtBootstrap {
             ATOI_ADDR,
             STRTOUL_ADDR,
             MR_PRINTF_ADDR,
+            SEND_APP_EVENT_ADDR,
         ] {
             memory.write32(addr, MOV_R0_IMM0)?;
             memory.write32(GuestAddr::new(addr.get().wrapping_add(4)), BX_LR)?;
@@ -551,6 +554,16 @@ impl ExtHost {
         self.verbose = verbose;
     }
 
+    pub fn alloc_guest_block<B: MemoryBus>(
+        &mut self,
+        memory: &mut B,
+        len: u32,
+    ) -> Result<Option<GuestAddr>, MemoryAccessError> {
+        let ptr = self.alloc_ext(memory, len)?.map(GuestAddr::new);
+        self.sync_memory_manager_cells(memory)?;
+        Ok(ptr)
+    }
+
     pub fn register_package_file(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
         self.package_files.insert(name.into(), bytes);
     }
@@ -763,6 +776,11 @@ impl ExtHost {
             return Ok(true);
         }
 
+        if pc == SEND_APP_EVENT_ADDR.get() {
+            self.handle_send_app_event(cpu)?;
+            return Ok(true);
+        }
+
         if pc == MR_GET_SCREEN_INFO_ADDR.get() {
             self.handle_mr_get_screen_info(cpu)?;
             return Ok(true);
@@ -791,23 +809,62 @@ impl ExtHost {
         Ok(false)
     }
 
+    fn handle_send_app_event<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let code = cpu.regs().reg(2);
+        match code {
+            0 => {
+                let delay = cpu.memory().read32(GuestAddr::new(cpu.regs().sp()))?;
+                self.pending_timer_delay_ms = Some(delay);
+                self.pending_timer_command = Some(HostTimerCommand::Start(delay));
+            }
+            1 => {
+                self.pending_timer_delay_ms = None;
+                self.pending_timer_command = Some(HostTimerCommand::Stop);
+            }
+            _ => {}
+        }
+
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
     fn handle_mr_c_function_new<B: MemoryBus>(
         &mut self,
         cpu: &mut Cpu<B>,
     ) -> Result<(), MemoryAccessError> {
         let helper = cpu.regs().reg(0);
-        let len = cpu.regs().reg(1);
+        let len = cpu.regs().reg(1).max(1);
         if helper != 0 {
             self.ext_helper_addr = Some(GuestAddr::new(helper));
         }
 
-        let context_addr = self.mr_c_function_p_addr.get();
+        let previous_context = self.mr_c_function_p_addr.get();
+        if self.ext_allocations.contains_key(&previous_context) {
+            self.free_ext(previous_context);
+        }
+
+        let Some(context_addr) = self.alloc_ext(cpu.memory_mut(), len)? else {
+            cpu.regs_mut().set_reg(0, u32::MAX);
+            return_to_lr(cpu);
+            return Ok(());
+        };
         for offset in 0..len {
             cpu.memory_mut()
                 .write8(GuestAddr::new(context_addr.wrapping_add(offset)), 0)?;
         }
 
-        cpu.regs_mut().set_reg(0, context_addr);
+        self.mr_c_function_p_addr = GuestAddr::new(context_addr);
+        cpu.memory_mut().write32(
+            GuestAddr::new(DEFAULT_LAYOUT.code_address().get().wrapping_add(4)),
+            context_addr,
+        )?;
+
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
         Ok(())
     }

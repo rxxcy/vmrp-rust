@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use vmrp_abi::ExtFile;
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
-use vmrp_platform::{ExtBootstrap, ExtHost};
+use vmrp_platform::{ExtBootstrap, ExtHost, HostTimerCommand, SEND_APP_EVENT_ADDR};
 
 fn real_ext_path() -> PathBuf {
     PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\cfunction.ext")
@@ -93,7 +93,7 @@ fn bootstrap_stub_allows_blx_call_and_return() {
     let (mut cpu, mut host) = new_bootstrapped_real_ext_cpu();
     step_n(&mut cpu, &mut host, 13);
 
-    assert_ne!(cpu.regs().reg(0), 0);
+    assert_eq!(cpu.regs().reg(0), 0);
     assert_eq!(cpu.regs().pc(), 0x80038);
     assert_eq!(cpu.regs().execution_mode(), ExecutionMode::Arm);
     let helper = host.ext_helper_addr().unwrap();
@@ -105,11 +105,9 @@ fn bootstrap_seeds_c_function_context_for_ext_type_store() {
     let (mut cpu, mut host) = new_bootstrapped_real_ext_cpu();
     step_n(&mut cpu, &mut host, 18);
 
-    assert_eq!(
-        cpu.memory().read32(GuestAddr::new(0x80004)).unwrap(),
-        0x182000
-    );
-    assert_eq!(cpu.memory().read32(GuestAddr::new(0x182008)).unwrap(), 1);
+    let context_addr = cpu.memory().read32(GuestAddr::new(0x80004)).unwrap();
+    assert!(context_addr >= DEFAULT_LAYOUT.memory_manager_address().get());
+    assert_eq!(cpu.memory().read32(GuestAddr::new(context_addr + 8)).unwrap(), 1);
     assert_eq!(cpu.regs().pc(), 0x8004C);
 }
 
@@ -122,7 +120,8 @@ fn bootstrap_seeds_mr_malloc_stub_for_indirect_call() {
         cpu.memory().read32(GuestAddr::new(0x180000)).unwrap(),
         0x181100
     );
-    assert_ne!(cpu.regs().reg(0), 0);
+    let allocated = cpu.regs().reg(0);
+    assert!(allocated >= DEFAULT_LAYOUT.memory_manager_address().get());
     assert_eq!(cpu.regs().pc(), 0x80840);
 }
 
@@ -891,7 +890,53 @@ fn host_handles_mr_c_function_new_stub() {
 
     assert!(host.handle(&mut cpu).unwrap());
     assert_eq!(cpu.regs().pc(), 0x80034);
-    assert_eq!(cpu.regs().reg(0), 0x182000);
+    assert_eq!(cpu.regs().reg(0), 0);
+    let context_addr = cpu.memory().read32(GuestAddr::new(0x80004)).unwrap();
+    assert!(context_addr >= DEFAULT_LAYOUT.memory_manager_address().get());
     let helper = host.ext_helper_addr().unwrap();
     assert!(helper.get() >= 0x80000);
+}
+
+#[test]
+fn host_send_app_event_stub_emits_timer_commands() {
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    memory.write32(GuestAddr::new(0x280000), 150).unwrap();
+
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+
+    let mut cpu = Cpu::new(memory);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80040);
+    cpu.regs_mut().set_sp(0x280000);
+
+    cpu.regs_mut().set_pc(SEND_APP_EVENT_ADDR.get());
+    cpu.regs_mut().set_reg(0, 0);
+    cpu.regs_mut().set_reg(1, 0x281000);
+    cpu.regs_mut().set_reg(2, 0);
+    cpu.regs_mut().set_reg(3, 0x282000);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().pc(), 0x80040);
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Start(150)));
+
+    cpu.regs_mut().set_pc(SEND_APP_EVENT_ADDR.get());
+    cpu.regs_mut().set_lr(0x80044);
+    cpu.regs_mut().set_reg(2, 1);
+    cpu.regs_mut().set_reg(3, 0x282000);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().pc(), 0x80044);
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Stop));
 }
