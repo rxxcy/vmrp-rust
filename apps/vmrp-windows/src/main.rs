@@ -4,14 +4,14 @@ use presenter::{DirtyRect, WindowPresenter};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vmrp_abi::{ExtFile, MrChunk, MrpDecodeError, MrpFile, MrpRuntimeAssets};
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, StepTrace, TestMemory};
 use vmrp_platform::{
     ExtBootstrap, ExtHost, HostScreenRegion, HostTimerCommand, FLAG_USE_UTF8_EDIT,
-    MR_FAILED, SEND_APP_EVENT_ADDR, VMRP_VER,
+    MR_EXT_FUNCTION_NEW_ADDR, MR_FAILED, SEND_APP_EVENT_ADDR, VMRP_VER,
 };
 use vmrp_runtime::{Runtime, RuntimeEvent, RuntimeStepResult, StageResult};
 
@@ -34,14 +34,54 @@ const HELPER_APP_INFO_SIZE: u32 = 16;
 const LEGACY_EXT_HANDLE_SIZE: u32 = 0x30;
 const LEGACY_EXT_TABLE_SIZE: u32 = 0x248;
 const LEGACY_TIMER_STRUCT_SIZE: u32 = 0x20;
+const BRIDGE_GAME_EXT_LOAD_ADDR: u32 = 0x90000;
 const MR_C_FUNCTION_CONTEXT_EXT_CHUNK_OFFSET: u32 = 0x0C;
 const MR_C_FUNCTION_CONTEXT_STACK_OFFSET: u32 = 0x10;
+const MR_C_FUNCTION_NEW_SLOT_OFFSET: u32 = 0x64;
 const MR_C_INTERNAL_TABLE_SLOT_OFFSET: u32 = 0x5C;
 const LEGACY_EXT_CHUNK_CHECK: u32 = 0x7FD854EB;
 const LEGACY_TIMER_CHECK: u32 = 0x79AB_BCCF;
+const HELPER_RW_RUNTIME_MODE_OFFSET: u32 = 0x04;
+const HELPER_RW_RUNTIME_READY_OFFSET: u32 = 0x1C;
+const HELPER_RW_VERSION_CODE_OFFSET: u32 = 0x20;
+const HELPER_RW_APP_INFO_CONTEXT_OFFSET: u32 = 0x24;
+const HELPER_RW_BRIDGE_COOKIE_OFFSET: u32 = 0x2C;
+const HELPER_RW_PRINTF_SLOT_OFFSET: u32 = 0x30;
 const HELPER_RW_MR_MALLOC_SLOT_OFFSET: u32 = 0x10C;
 const HELPER_RW_MR_FREE_SLOT_OFFSET: u32 = 0x110;
+const HELPER_RW_STRCPY_SLOT_OFFSET: u32 = 0x120;
+const HELPER_RW_STRNCPY_SLOT_OFFSET: u32 = 0x124;
+const HELPER_RW_STRCAT_SLOT_OFFSET: u32 = 0x128;
+const HELPER_RW_STRNCAT_SLOT_OFFSET: u32 = 0x12C;
+const HELPER_RW_MEMCMP_SLOT_OFFSET: u32 = 0x130;
+const HELPER_RW_STRCMP_SLOT_OFFSET: u32 = 0x134;
+const HELPER_RW_STRNCMP_SLOT_OFFSET: u32 = 0x138;
+const HELPER_RW_STRCOLL_SLOT_OFFSET: u32 = 0x13C;
+const HELPER_RW_MEMCHR_MIRROR_SLOT_OFFSET: u32 = 0x140;
+const HELPER_RW_MEMCHR_SLOT_OFFSET: u32 = 0x5C;
+const HELPER_RW_MEMSET_SLOT_OFFSET: u32 = 0x60;
+const HELPER_RW_STRLEN_SLOT_OFFSET: u32 = 0x64;
+const HELPER_RW_STRSTR_SLOT_OFFSET: u32 = 0x68;
+const HELPER_RW_SPRINTF_SLOT_OFFSET: u32 = 0x6C;
+const HELPER_RW_ATOI_SLOT_OFFSET: u32 = 0x70;
+const HELPER_RW_STRTOUL_SLOT_OFFSET: u32 = 0x74;
 const HELPER_RW_INTERNAL_TABLE_OFFSET: u32 = 0x168;
+const HOST_MEMSET_ADDR: u32 = 0x181300;
+const HOST_STRCPY_ADDR: u32 = 0x181450;
+const HOST_STRNCPY_ADDR: u32 = 0x181460;
+const HOST_STRCAT_ADDR: u32 = 0x181470;
+const HOST_STRNCAT_ADDR: u32 = 0x181480;
+const HOST_MEMCMP_ADDR: u32 = 0x181490;
+const HOST_STRCMP_ADDR: u32 = 0x1814A0;
+const HOST_STRNCMP_ADDR: u32 = 0x1814B0;
+const HOST_STRCOLL_ADDR: u32 = 0x1814C0;
+const HOST_MEMCHR_ADDR: u32 = 0x1814D0;
+const HOST_STRLEN_ADDR: u32 = 0x1814E0;
+const HOST_STRSTR_ADDR: u32 = 0x1814F0;
+const HOST_SPRINTF_ADDR: u32 = 0x181500;
+const HOST_ATOI_ADDR: u32 = 0x181510;
+const HOST_STRTOUL_ADDR: u32 = 0x181520;
+const HOST_PRINTF_ADDR: u32 = 0x181530;
 const WINDOW_TITLE: &str = "vmrp-rust";
 const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
@@ -56,6 +96,7 @@ struct RunnerConfig {
     verbose: bool,
     step_limit: usize,
     trace_limit: usize,
+    runtime_limit_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -240,7 +281,7 @@ fn main() {
 }
 
 fn usage() -> &'static str {
-    "Usage: vmrp-windows [--window] [--verbose|-v] [--step-limit N] [--trace-limit N] [<path-to.mrp>]"
+    "Usage: vmrp-windows [--window] [--verbose|-v] [--step-limit N] [--trace-limit N] [--runtime-ms N] [<path-to.mrp>]"
 }
 
 fn parse_args() -> Result<ParseOutcome, String> {
@@ -255,8 +296,9 @@ where
     let mut mrp_path: Option<String> = None;
     let mut window = false;
     let mut verbose = false;
-    let mut step_limit = 4000usize;
+    let mut step_limit = 20_000usize;
     let mut trace_limit = 200usize;
+    let mut runtime_limit_ms = None;
 
     let args = args
         .into_iter()
@@ -294,6 +336,17 @@ where
                     .map_err(|_| String::from("--trace-limit must be an integer"))?;
                 index += 2;
             }
+            "--runtime-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| String::from("--runtime-ms requires a value"))?;
+                runtime_limit_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| String::from("--runtime-ms must be an integer"))?,
+                );
+                index += 2;
+            }
             _ if arg.starts_with('-') => {
                 return Err(format!("unknown option: {arg}"));
             }
@@ -313,6 +366,7 @@ where
         verbose,
         step_limit,
         trace_limit,
+        runtime_limit_ms,
     }))
 }
 
@@ -337,25 +391,50 @@ fn default_stack_top() -> u32 {
     DEFAULT_LAYOUT.stack_address().get() + DEFAULT_LAYOUT.stack_size()
 }
 
+fn load_helper_ext(mrp_path: &str) -> Result<ExtFile, String> {
+    for candidate in helper_ext_search_paths(mrp_path) {
+        if !candidate.is_file() {
+            continue;
+        }
+        return ExtFile::from_path(&candidate).map_err(|err| {
+            format!(
+                "load fallback helper failed at {}: {err:?}",
+                candidate.display()
+            )
+        });
+    }
+    Err(String::from("NotFound"))
+}
+
+fn is_plugin_only_package(mrp: &MrpFile) -> bool {
+    !mrp.entries().iter().any(|entry| entry.name().ends_with(".mr"))
+        && mrp
+            .entries()
+            .iter()
+            .any(|entry| entry.name().ends_with(".ext") && entry.name() != "cfunction.ext")
+}
+
+fn primary_plugin_ext_name(mrp: &MrpFile, mrp_path: &str) -> Option<String> {
+    let package_stem = Path::new(mrp_path).file_stem()?.to_string_lossy().to_string();
+    let preferred = format!("{package_stem}.ext");
+    if mrp.entry(&preferred).is_some() {
+        return Some(preferred);
+    }
+
+    mrp.entries()
+        .iter()
+        .find(|entry| entry.name().ends_with(".ext") && entry.name() != "cfunction.ext")
+        .map(|entry| entry.name().to_string())
+}
+
 fn load_runtime_assets(mrp: &MrpFile, mrp_path: &str) -> Result<MrpRuntimeAssets, String> {
     match mrp.runtime_assets() {
         Ok(assets) => Ok(assets),
         Err(MrpDecodeError::NotFound) => {
-            for candidate in helper_ext_search_paths(mrp_path) {
-                if !candidate.is_file() {
-                    continue;
-                }
-                let ext = ExtFile::from_path(&candidate).map_err(|err| {
-                    format!(
-                        "load fallback helper failed at {}: {err:?}",
-                        candidate.display()
-                    )
-                })?;
-                return mrp.runtime_assets_with_ext(ext).map_err(|err| {
-                    format!("build runtime assets with fallback helper failed: {err:?}")
-                });
-            }
-            Err(String::from("NotFound"))
+            let ext = load_helper_ext(mrp_path)?;
+            mrp.runtime_assets_with_ext(ext).map_err(|err| {
+                format!("build runtime assets with fallback helper failed: {err:?}")
+            })
         }
         Err(err) => Err(format!("{err:?}")),
     }
@@ -364,10 +443,28 @@ fn load_runtime_assets(mrp: &MrpFile, mrp_path: &str) -> Result<MrpRuntimeAssets
 fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     let mrp =
         MrpFile::from_path(&config.mrp_path).map_err(|err| format!("read mrp failed: {err:?}"))?;
-    let assets = load_runtime_assets(&mrp, &config.mrp_path)
-        .map_err(|err| format!("decode runtime assets failed: {err}"))?;
-    let ext = assets.cfunction_ext().clone();
-    let start_mr = assets.start_mr();
+    let plugin_only_package = is_plugin_only_package(&mrp);
+    let (ext, start_mr, plugin_primary_ext_name, plugin_primary_ext) = if plugin_only_package {
+        let ext = load_helper_ext(&config.mrp_path)
+            .map_err(|err| format!("decode plugin helper failed: {err}"))?;
+        let primary_name = primary_plugin_ext_name(&mrp, &config.mrp_path)
+            .ok_or_else(|| String::from("plugin package has no primary .ext entry"))?;
+        let primary_bytes = mrp
+            .file_bytes_inflated(&primary_name)
+            .map_err(|err| format!("inflate plugin ext {primary_name} failed: {err:?}"))?;
+        let primary_ext = ExtFile::from_bytes(&primary_bytes)
+            .map_err(|err| format!("parse plugin ext {primary_name} failed: {err:?}"))?;
+        (ext, None, Some(primary_name), Some(primary_ext))
+    } else {
+        let assets = load_runtime_assets(&mrp, &config.mrp_path)
+            .map_err(|err| format!("decode runtime assets failed: {err}"))?;
+        (
+            assets.cfunction_ext().clone(),
+            Some(assets.start_mr().to_vec()),
+            None,
+            None,
+        )
+    };
 
     if config.verbose {
         println!("real_mrp_header={}", String::from_utf8_lossy(mrp.magic()));
@@ -381,20 +478,24 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
                 entry.len()
             );
         }
-        if start_mr.len() >= 4 {
-            println!(
-                "real_mrp_start_mr_head={:02X}{:02X}{:02X}{:02X}",
-                start_mr[0], start_mr[1], start_mr[2], start_mr[3]
-            );
-        }
-        match MrChunk::from_bytes(start_mr) {
-            Ok(chunk) => {
-                println!("start_mr_chunk_version=0x{:02X}", chunk.header().version());
-                println!("start_mr_main_code_count={}", chunk.main().code_count());
+        if let Some(start_mr) = start_mr.as_deref() {
+            if start_mr.len() >= 4 {
+                println!(
+                    "real_mrp_start_mr_head={:02X}{:02X}{:02X}{:02X}",
+                    start_mr[0], start_mr[1], start_mr[2], start_mr[3]
+                );
             }
-            Err(err) => {
-                println!("start_mr_chunk_parse_error={err:?}");
+            match MrChunk::from_bytes(start_mr) {
+                Ok(chunk) => {
+                    println!("start_mr_chunk_version=0x{:02X}", chunk.header().version());
+                    println!("start_mr_main_code_count={}", chunk.main().code_count());
+                }
+                Err(err) => {
+                    println!("start_mr_chunk_parse_error={err:?}");
+                }
             }
+        } else if let Some(plugin_ext_name) = plugin_primary_ext_name.as_deref() {
+            println!("plugin_primary_ext={plugin_ext_name}");
         }
     }
 
@@ -408,11 +509,13 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             .map_err(|err| format!("write ext byte failed: {err:?}"))?;
     }
 
-    for (offset, byte) in start_mr.iter().enumerate() {
-        let addr = GuestAddr::new(START_MR_ADDR.wrapping_add(offset as u32));
-        memory
-            .write8(addr, *byte)
-            .map_err(|err| format!("write start.mr byte failed: {err:?}"))?;
+    if let Some(start_mr) = start_mr.as_deref() {
+        for (offset, byte) in start_mr.iter().enumerate() {
+            let addr = GuestAddr::new(START_MR_ADDR.wrapping_add(offset as u32));
+            memory
+                .write8(addr, *byte)
+                .map_err(|err| format!("write start.mr byte failed: {err:?}"))?;
+        }
     }
 
     memory
@@ -436,6 +539,13 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     bootstrap
         .apply(&mut memory, DEFAULT_LAYOUT.code_address())
         .map_err(|err| format!("seed ext bootstrap failed: {err:?}"))?;
+    seed_legacy_package_runtime_paths(
+        &mut memory,
+        GuestAddr::new(0x180000),
+        &config.mrp_path,
+        start_dsm_ext_name_for_mrp(&mrp),
+    )
+    .map_err(|err| format!("seed legacy package paths failed: {err:?}"))?;
 
     let mut host = ExtHost::new(
         GuestAddr::new(0x181000),
@@ -500,6 +610,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
 
     let mut dsm_init_ret = MR_FAILED;
     let mut start_dsm_ret = MR_FAILED;
+    let bridge_package = should_skip_helper_bootstrap(&mrp);
 
     if let Some(helper) = helper {
         helper_rw_watch = helper_rw_watch_from_env(host.c_function_p_addr());
@@ -556,121 +667,390 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
                 dump_helper_state(cpu.memory(), host.c_function_p_addr(), label);
             }
         }
-        if should_skip_helper_bootstrap(&mrp) {
-            apply_bridge_compatible_helper_state(cpu.memory_mut(), host.c_function_p_addr())
-                .map_err(|err| format!("apply bridge-compatible helper state failed: {err:?}"))?;
-        }
-        apply_helper_rw_debug_overrides(cpu.memory_mut(), host.c_function_p_addr(), config.verbose)
+        if plugin_only_package {
+            let plugin_ext_name = plugin_primary_ext_name
+                .as_deref()
+                .ok_or_else(|| String::from("plugin package missing primary ext name"))?;
+            let plugin_ext = plugin_primary_ext
+                .as_ref()
+                .ok_or_else(|| String::from("plugin package missing primary ext payload"))?;
+            let plugin_blob = plugin_ext.to_code_blob(BRIDGE_GAME_EXT_LOAD_ADDR);
+            for (offset, byte) in plugin_blob.bytes().iter().enumerate() {
+                cpu.memory_mut().write8(
+                    GuestAddr::new(plugin_blob.load_address().get().wrapping_add(offset as u32)),
+                    *byte,
+                )
+                .map_err(|err| format!("write plugin ext byte failed: {err:?}"))?;
+            }
+
+            let plugin_table_addr = alloc_required_guest_block(
+                cpu.memory_mut(),
+                &mut host,
+                LEGACY_EXT_TABLE_SIZE,
+                "plugin ext mr_table",
+            )?;
+            copy_guest_words(
+                cpu.memory_mut(),
+                bootstrap.mr_table_addr.get(),
+                plugin_table_addr,
+                LEGACY_EXT_TABLE_SIZE,
+            )
+            .map_err(|err| format!("copy plugin ext mr_table failed: {err:?}"))?;
+            write_u32(
+                cpu.memory_mut(),
+                plugin_table_addr.wrapping_add(MR_C_FUNCTION_NEW_SLOT_OFFSET),
+                MR_EXT_FUNCTION_NEW_ADDR.get(),
+            )
+            .map_err(|err| format!("patch plugin ext mr_table failed: {err:?}"))?;
+            write_u32(cpu.memory_mut(), plugin_blob.load_address().get(), plugin_table_addr)
+                .map_err(|err| format!("seed plugin ext mr_table ptr failed: {err:?}"))?;
+            write_u32(cpu.memory_mut(), plugin_blob.load_address().get().wrapping_add(4), 0)
+                .map_err(|err| format!("clear plugin ext context ptr failed: {err:?}"))?;
+
+            host.begin_plugin_ext_load(plugin_blob.load_address(), GuestAddr::new(0));
+            cpu.regs_mut().set_pc(plugin_blob.entry().get());
+            cpu.regs_mut().set_execution_mode(plugin_blob.mode());
+            cpu.regs_mut().set_sp(default_stack_top());
+            cpu.regs_mut().set_lr(0);
+            cpu.regs_mut().set_reg(0, 0);
+            let stage = run_loop(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                config.step_limit,
+                config.trace_limit,
+                "plugin_ext_load",
+                config.verbose,
+                &mut helper_rw_watch,
+                &mut presenter,
+            );
+            stages.push(stage);
+            host.clear_plugin_ext_load();
+
+            let plugin_helper = host
+                .ext_helper_addr()
+                .ok_or_else(|| format!("plugin ext helper not initialized for {plugin_ext_name}"))?;
+            seed_ext_chunk_descriptor(
+                cpu.memory_mut(),
+                &mut host,
+                bootstrap.mr_table_addr,
+                plugin_blob.entry().get(),
+                plugin_blob.bytes().len() as u32 + 8,
+                plugin_helper.get(),
+            )
+            .map_err(|err| format!("seed plugin ext chunk descriptor failed: {err}"))?;
+            helper_rw_watch = helper_rw_watch_from_env(host.c_function_p_addr());
+            for (code, event_addr, input_len) in
+                helper_bootstrap_sequence(plugin_blob.load_address().get(), helper_bootstrap)
+            {
+                let label = match code {
+                    6 => "plugin_helper_version",
+                    8 => "plugin_helper_app_info",
+                    0 => "plugin_helper_init",
+                    _ => "plugin_helper",
+                };
+                setup_helper_call(
+                    &mut cpu,
+                    plugin_helper,
+                    host.c_function_p_addr(),
+                    code,
+                    event_addr,
+                    input_len,
+                );
+                let stage = run_loop(
+                    &mut runtime,
+                    &mut cpu,
+                    &mut host,
+                    config.step_limit,
+                    config.trace_limit,
+                    label,
+                    config.verbose,
+                    &mut helper_rw_watch,
+                    &mut presenter,
+                );
+                stages.push(stage);
+                if config.verbose {
+                    dump_helper_state(cpu.memory(), host.c_function_p_addr(), label);
+                }
+            }
+            dsm_init_ret = 0;
+            start_dsm_ret = 0;
+        } else if bridge_package {
+            let game_ext_bytes = mrp
+                .file_bytes_inflated("game.ext")
+                .map_err(|err| format!("load game.ext failed: {err:?}"))?;
+            let game_ext = ExtFile::from_bytes(&game_ext_bytes)
+                .map_err(|err| format!("parse game.ext failed: {err:?}"))?;
+            let game_blob = game_ext.to_code_blob(BRIDGE_GAME_EXT_LOAD_ADDR);
+            for (offset, byte) in game_blob.bytes().iter().enumerate() {
+                cpu.memory_mut().write8(
+                    GuestAddr::new(game_blob.load_address().get().wrapping_add(offset as u32)),
+                    *byte,
+                )
+                .map_err(|err| format!("write game.ext byte failed: {err:?}"))?;
+            }
+
+            let plugin_table_addr = alloc_required_guest_block(
+                cpu.memory_mut(),
+                &mut host,
+                LEGACY_EXT_TABLE_SIZE,
+                "bridge game.ext mr_table",
+            )?;
+            copy_guest_words(
+                cpu.memory_mut(),
+                bootstrap.mr_table_addr.get(),
+                plugin_table_addr,
+                LEGACY_EXT_TABLE_SIZE,
+            )
+            .map_err(|err| format!("copy bridge game.ext mr_table failed: {err:?}"))?;
+            write_u32(
+                cpu.memory_mut(),
+                plugin_table_addr.wrapping_add(MR_C_FUNCTION_NEW_SLOT_OFFSET),
+                MR_EXT_FUNCTION_NEW_ADDR.get(),
+            )
+            .map_err(|err| format!("patch bridge game.ext mr_table failed: {err:?}"))?;
+            write_u32(cpu.memory_mut(), game_blob.load_address().get(), plugin_table_addr)
+                .map_err(|err| format!("seed bridge game.ext mr_table ptr failed: {err:?}"))?;
+            write_u32(cpu.memory_mut(), game_blob.load_address().get().wrapping_add(4), 0)
+                .map_err(|err| format!("clear bridge game.ext context ptr failed: {err:?}"))?;
+
+            host.begin_plugin_ext_load(game_blob.load_address(), GuestAddr::new(0));
+            cpu.regs_mut().set_pc(game_blob.entry().get());
+            cpu.regs_mut().set_execution_mode(game_blob.mode());
+            cpu.regs_mut().set_sp(default_stack_top());
+            cpu.regs_mut().set_lr(0);
+            cpu.regs_mut().set_reg(0, 0);
+            let stage = run_loop(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                config.step_limit,
+                config.trace_limit,
+                "game_ext_load",
+                config.verbose,
+                &mut helper_rw_watch,
+                &mut presenter,
+            );
+            stages.push(stage);
+            host.clear_plugin_ext_load();
+
+            let game_helper = host
+                .ext_helper_addr()
+                .ok_or_else(|| String::from("bridge game.ext helper not initialized"))?;
+            seed_ext_chunk_descriptor(
+                cpu.memory_mut(),
+                &mut host,
+                bootstrap.mr_table_addr,
+                game_blob.entry().get(),
+                game_blob.bytes().len() as u32 + 8,
+                game_helper.get(),
+            )
+            .map_err(|err| format!("seed game.ext chunk descriptor failed: {err}"))?;
+            helper_rw_watch = helper_rw_watch_from_env(host.c_function_p_addr());
+            for (code, event_addr, input_len) in
+                helper_bootstrap_sequence(game_blob.load_address().get(), helper_bootstrap)
+            {
+                let label = match code {
+                    6 => "game_helper_version",
+                    8 => "game_helper_app_info",
+                    0 => "game_helper_init",
+                    _ => "game_helper",
+                };
+                seed_bridge_compatible_helper_state(
+                    cpu.memory_mut(),
+                    host.c_function_p_addr(),
+                    bootstrap.mr_table_addr,
+                    bootstrap.mr_malloc_addr,
+                    bootstrap.mr_free_addr,
+                    helper_bootstrap,
+                )
+                .map_err(|err| format!("seed bridge helper runtime state failed: {err:?}"))?;
+                setup_helper_call(
+                    &mut cpu,
+                    game_helper,
+                    host.c_function_p_addr(),
+                    code,
+                    event_addr,
+                    input_len,
+                );
+                let stage = run_loop(
+                    &mut runtime,
+                    &mut cpu,
+                    &mut host,
+                    config.step_limit,
+                    config.trace_limit,
+                    label,
+                    config.verbose,
+                    &mut helper_rw_watch,
+                    &mut presenter,
+                );
+                stages.push(stage);
+                if config.verbose {
+                    dump_helper_state(cpu.memory(), host.c_function_p_addr(), label);
+                }
+            }
+            seed_bridge_compatible_helper_state(
+                cpu.memory_mut(),
+                host.c_function_p_addr(),
+                bootstrap.mr_table_addr,
+                bootstrap.mr_malloc_addr,
+                bootstrap.mr_free_addr,
+                helper_bootstrap,
+            )
+            .map_err(|err| format!("seed bridge-compatible helper state failed: {err:?}"))?;
+            dsm_init_ret = 0;
+            start_dsm_ret = 0;
+            drive_runtime_events(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                game_helper,
+                runtime_data_base,
+                config,
+                &mut helper_rw_watch,
+                &mut presenter,
+                &mut stages,
+            )?;
+        } else {
+            apply_helper_rw_debug_overrides(
+                cpu.memory_mut(),
+                host.c_function_p_addr(),
+                config.verbose,
+            )
             .map_err(|err| format!("apply helper rw debug overrides failed: {err:?}"))?;
-        seed_helper_runtime_compat_slots(
-            cpu.memory_mut(),
-            host.c_function_p_addr(),
-            bootstrap.mr_table_addr,
-            bootstrap.mr_malloc_addr,
-            bootstrap.mr_free_addr,
-        )
-        .map_err(|err| format!("seed helper runtime compat slots failed: {err:?}"))?;
+            seed_helper_runtime_compat_slots(
+                cpu.memory_mut(),
+                host.c_function_p_addr(),
+                bootstrap.mr_table_addr,
+                bootstrap.mr_malloc_addr,
+                bootstrap.mr_free_addr,
+            )
+            .map_err(|err| format!("seed helper runtime compat slots failed: {err:?}"))?;
 
-        let dsm_require_funcs_addr = runtime_data_base + RUNTIME_DSM_REQUIRE_FUNCS_OFFSET;
-        host.install_dsm_require_funcs(
-            cpu.memory_mut(),
-            GuestAddr::new(dsm_require_funcs_addr),
-            FLAG_USE_UTF8_EDIT,
-        )
-        .map_err(|err| format!("install DSM_REQUIRE_FUNCS failed: {err:?}"))?;
+            let dsm_require_funcs_addr = runtime_data_base + RUNTIME_DSM_REQUIRE_FUNCS_OFFSET;
+            host.install_dsm_require_funcs(
+                cpu.memory_mut(),
+                GuestAddr::new(dsm_require_funcs_addr),
+                FLAG_USE_UTF8_EDIT,
+            )
+            .map_err(|err| format!("install DSM_REQUIRE_FUNCS failed: {err:?}"))?;
 
-        let dsm_init_event_addr = write_event(
-            cpu.memory_mut(),
-            runtime_data_base + RUNTIME_HELPER_EVENT_OFFSET,
-            DSM_INIT_CODE,
-            dsm_require_funcs_addr,
-            0,
-        )
-        .map_err(|err| format!("write DSM_INIT event failed: {err:?}"))?;
-        setup_helper_call(
-            &mut cpu,
-            helper,
-            host.c_function_p_addr(),
-            1,
-            dsm_init_event_addr,
-            HELPER_EVENT_SIZE,
-        );
-        let stage_dsm_init = run_loop(
-            &mut runtime,
-            &mut cpu,
-            &mut host,
-            config.step_limit,
-            config.trace_limit,
-            "dsm_init",
-            config.verbose,
-            &mut helper_rw_watch,
-            &mut presenter,
-        );
-        dsm_init_ret = cpu.regs().reg(0) as i32;
-        stages.push(stage_dsm_init);
-        if config.verbose {
-            dump_helper_state(cpu.memory(), host.c_function_p_addr(), "dsm_init");
+            let dsm_init_event_addr = write_event(
+                cpu.memory_mut(),
+                runtime_data_base + RUNTIME_HELPER_EVENT_OFFSET,
+                DSM_INIT_CODE,
+                dsm_require_funcs_addr,
+                0,
+            )
+            .map_err(|err| format!("write DSM_INIT event failed: {err:?}"))?;
+            setup_helper_call(
+                &mut cpu,
+                helper,
+                host.c_function_p_addr(),
+                1,
+                dsm_init_event_addr,
+                HELPER_EVENT_SIZE,
+            );
+            let stage_dsm_init = run_loop(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                config.step_limit,
+                config.trace_limit,
+                "dsm_init",
+                config.verbose,
+                &mut helper_rw_watch,
+                &mut presenter,
+            );
+            dsm_init_ret = cpu.regs().reg(0) as i32;
+            stages.push(stage_dsm_init);
+            if config.verbose {
+                dump_helper_state(cpu.memory(), host.c_function_p_addr(), "dsm_init");
+            }
+
+            let start_t_addr = prepare_start_dsm_payload(
+                cpu.memory_mut(),
+                runtime_data_base,
+                &mrp,
+                &config.mrp_path,
+            )
+            .map_err(|err| format!("prepare MR_START_DSM payload failed: {err:?}"))?;
+            let start_event_addr = write_event(
+                cpu.memory_mut(),
+                runtime_data_base + RUNTIME_HELPER_EVENT_OFFSET,
+                MR_START_DSM_CODE,
+                start_t_addr,
+                0,
+            )
+            .map_err(|err| format!("write MR_START_DSM event failed: {err:?}"))?;
+            setup_helper_call(
+                &mut cpu,
+                helper,
+                host.c_function_p_addr(),
+                1,
+                start_event_addr,
+                HELPER_EVENT_SIZE,
+            );
+            let stage_start_dsm = run_loop(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                config.step_limit,
+                config.trace_limit,
+                "start_dsm",
+                config.verbose,
+                &mut helper_rw_watch,
+                &mut presenter,
+            );
+            start_dsm_ret = cpu.regs().reg(0) as i32;
+            stages.push(stage_start_dsm);
+            if config.verbose {
+                dump_helper_state(cpu.memory(), host.c_function_p_addr(), "start_dsm");
+            }
+
+            drive_runtime_events(
+                &mut runtime,
+                &mut cpu,
+                &mut host,
+                helper,
+                runtime_data_base,
+                config,
+                &mut helper_rw_watch,
+                &mut presenter,
+                &mut stages,
+            )?;
         }
-
-        let start_t_addr = prepare_start_dsm_payload(
-            cpu.memory_mut(),
-            runtime_data_base,
-            &config.mrp_path,
-        )
-        .map_err(|err| format!("prepare MR_START_DSM payload failed: {err:?}"))?;
-        let start_event_addr = write_event(
-            cpu.memory_mut(),
-            runtime_data_base + RUNTIME_HELPER_EVENT_OFFSET,
-            MR_START_DSM_CODE,
-            start_t_addr,
-            0,
-        )
-        .map_err(|err| format!("write MR_START_DSM event failed: {err:?}"))?;
-        setup_helper_call(
-            &mut cpu,
-            helper,
-            host.c_function_p_addr(),
-            1,
-            start_event_addr,
-            HELPER_EVENT_SIZE,
-        );
-        let stage_start_dsm = run_loop(
-            &mut runtime,
-            &mut cpu,
-            &mut host,
-            config.step_limit,
-            config.trace_limit,
-            "start_dsm",
-            config.verbose,
-            &mut helper_rw_watch,
-            &mut presenter,
-        );
-        start_dsm_ret = cpu.regs().reg(0) as i32;
-        stages.push(stage_start_dsm);
-        if config.verbose {
-            dump_helper_state(cpu.memory(), host.c_function_p_addr(), "start_dsm");
-        }
-
-        drive_runtime_events(
-            &mut runtime,
-            &mut cpu,
-            &mut host,
-            helper,
-            runtime_data_base,
-            config,
-            &mut helper_rw_watch,
-            &mut presenter,
-            &mut stages,
-        )?;
     }
 
+    let bridge_running_stage = bridge_package
+        && stages.iter().any(|stage| {
+            stage.label == "game_helper_init" && stage.stop_reason == "step budget exhausted"
+        });
+    let plugin_running_stage = plugin_only_package
+        && stages.iter().any(|stage| {
+            stage.label == "plugin_helper_init" && stage.stop_reason == "step budget exhausted"
+        });
+    let legacy_running_stage = !bridge_package
+        && !plugin_only_package
+        && stages.iter().any(|stage| {
+            stage.label == "start_dsm" && stage.stop_reason == "step budget exhausted"
+        });
     let no_runtime_faults = stages.iter().all(|stage| {
         !stage.stop_reason.contains("UnimplementedInstruction")
-            && is_successful_stage_stop_reason(&stage.stop_reason)
+            && (is_successful_stage_stop_reason(&stage.stop_reason)
+                || (bridge_running_stage
+                    && stage.label == "game_helper_init"
+                    && stage.stop_reason == "step budget exhausted")
+                || (plugin_running_stage
+                    && stage.label == "plugin_helper_init"
+                    && stage.stop_reason == "step budget exhausted")
+                || (legacy_running_stage
+                    && stage.label == "start_dsm"
+                    && stage.stop_reason == "step budget exhausted"))
     });
     let has_helper = helper_addr.is_some();
     let version_ok = dsm_init_ret == VMRP_VER || dsm_init_ret == 0;
-    let start_ok = start_dsm_ret != MR_FAILED;
+    let start_ok = start_dsm_ret != MR_FAILED || legacy_running_stage;
 
     let run_ok = no_runtime_faults && has_helper && version_ok && start_ok;
 
@@ -806,11 +1186,8 @@ fn run_loop(
             return RuntimeStepResult::Stop(err);
         }
 
-        if let Some(command) = host.take_timer_command() {
-            match command {
-                HostTimerCommand::Start(delay) => runtime.start_timer(delay),
-                HostTimerCommand::Stop => runtime.stop_timer(),
-            }
+        if let Err(err) = drain_host_runtime_events(runtime, host) {
+            return RuntimeStepResult::Stop(err);
         }
 
         runtime.sync_wall_clock();
@@ -836,6 +1213,9 @@ fn run_loop(
                     if let Ok(sample) = watch.sample(cpu.memory()) {
                         log_helper_rw_watch_sample(label, observed, "host", pc, &sample);
                     }
+                }
+                if let Err(err) = drain_host_runtime_events(runtime, host) {
+                    return RuntimeStepResult::Stop(err);
                 }
                 if let Err(err) = drain_host_ui(runtime, host, presenter) {
                     return RuntimeStepResult::Stop(err);
@@ -888,6 +1268,27 @@ fn run_loop(
     stage
 }
 
+fn drain_host_runtime_events(runtime: &mut Runtime, host: &mut ExtHost) -> Result<(), String> {
+    while let Some(command) = host.take_timer_command() {
+        match command {
+            HostTimerCommand::Start(delay) => runtime.start_timer(delay),
+            HostTimerCommand::Stop => runtime.stop_timer(),
+        }
+    }
+
+    while let Some(event) = host.take_app_event() {
+        let code = i32::try_from(event.code)
+            .map_err(|_| format!("guest app event code overflow: {}", event.code))?;
+        runtime.push_event(RuntimeEvent::GuestEvent {
+            code,
+            p0: event.p0,
+            p1: event.p1,
+        });
+    }
+
+    Ok(())
+}
+
 fn drain_host_ui(
     runtime: &mut Runtime,
     host: &mut ExtHost,
@@ -931,6 +1332,13 @@ fn should_keep_waiting_for_host_events(
     }
 }
 
+fn runtime_limit_reached(started_at: Instant, runtime_limit_ms: Option<u64>) -> bool {
+    let Some(limit_ms) = runtime_limit_ms else {
+        return false;
+    };
+    started_at.elapsed().as_millis() as u64 >= limit_ms
+}
+
 fn to_presenter_rect(region: HostScreenRegion) -> DirtyRect {
     DirtyRect {
         x: region.x,
@@ -952,11 +1360,16 @@ fn drive_runtime_events(
     stages: &mut Vec<StageResult>,
 ) -> Result<(), String> {
     let mut idle_polls = 0usize;
+    let started_at = Instant::now();
 
     loop {
         drain_host_ui(runtime, host, presenter)?;
         runtime.sync_wall_clock();
         runtime.poll_timers();
+
+        if runtime_limit_reached(started_at, config.runtime_limit_ms) {
+            break;
+        }
 
         let mut dispatched = false;
         while let Some(event) = runtime.pop_event() {
@@ -1319,11 +1732,8 @@ fn helper_bootstrap_sequence_for_mrp(
     helper_load_addr: u32,
     payload: HelperBootstrapPayload,
 ) -> Vec<(u32, u32, u32)> {
-    if should_skip_helper_bootstrap(mrp) {
-        vec![(0, helper_load_addr, payload.version_code)]
-    } else {
-        helper_bootstrap_sequence(helper_load_addr, payload)
-    }
+    let _ = mrp;
+    helper_bootstrap_sequence(helper_load_addr, payload)
 }
 
 fn mrp_guest_filename(mrp_path: &str) -> String {
@@ -1332,14 +1742,24 @@ fn mrp_guest_filename(mrp_path: &str) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| mrp_path.to_string())
 }
+
+fn start_dsm_ext_name_for_mrp(mrp: &MrpFile) -> &'static str {
+    if mrp.entry("game.ext").is_some() && mrp.entry("plugins.lst").is_some() {
+        "game.ext"
+    } else {
+        "start.mr"
+    }
+}
+
 fn prepare_start_dsm_payload(
     memory: &mut TestMemory,
     runtime_data_base: u32,
+    mrp: &MrpFile,
     mrp_path: &str,
 ) -> Result<u32, vmrp_cpu::MemoryAccessError> {
     let mut cursor = runtime_data_base;
     let filename_ptr = write_c_string(memory, &mut cursor, &mrp_guest_filename(mrp_path))?;
-    let ext_ptr = write_c_string(memory, &mut cursor, "start.mr")?;
+    let ext_ptr = write_c_string(memory, &mut cursor, start_dsm_ext_name_for_mrp(mrp))?;
 
     let start_t_addr = runtime_data_base + RUNTIME_START_T_OFFSET;
     write_u32(memory, start_t_addr, filename_ptr)?;
@@ -1365,12 +1785,69 @@ fn write_event(
 fn apply_bridge_compatible_helper_state<B: MemoryBus>(
     memory: &mut B,
     c_function_p: GuestAddr,
+    payload: HelperBootstrapPayload,
 ) -> Result<(), vmrp_cpu::MemoryAccessError> {
     let rw_base = memory.read32(GuestAddr::new(c_function_p.get()))?;
     if rw_base == 0 {
         return Ok(());
     }
-    memory.write32(GuestAddr::new(rw_base.wrapping_add(0x04)), 0)?;
+
+    memory.write32(
+        GuestAddr::new(rw_base.wrapping_add(HELPER_RW_RUNTIME_MODE_OFFSET)),
+        0,
+    )?;
+
+    for (offset, value) in [
+        (HELPER_RW_RUNTIME_READY_OFFSET, 1),
+        (HELPER_RW_VERSION_CODE_OFFSET, payload.version_code),
+        (
+            HELPER_RW_APP_INFO_CONTEXT_OFFSET,
+            payload.app_info_addr.wrapping_sub(0x24),
+        ),
+        (HELPER_RW_BRIDGE_COOKIE_OFFSET, 0x270D),
+        (HELPER_RW_PRINTF_SLOT_OFFSET, HOST_PRINTF_ADDR),
+        (HELPER_RW_MEMCHR_SLOT_OFFSET, HOST_MEMCHR_ADDR),
+        (HELPER_RW_MEMSET_SLOT_OFFSET, HOST_MEMSET_ADDR),
+        (HELPER_RW_STRLEN_SLOT_OFFSET, HOST_STRLEN_ADDR),
+        (HELPER_RW_STRSTR_SLOT_OFFSET, HOST_STRSTR_ADDR),
+        (HELPER_RW_SPRINTF_SLOT_OFFSET, HOST_SPRINTF_ADDR),
+        (HELPER_RW_ATOI_SLOT_OFFSET, HOST_ATOI_ADDR),
+        (HELPER_RW_STRTOUL_SLOT_OFFSET, HOST_STRTOUL_ADDR),
+        (HELPER_RW_STRCPY_SLOT_OFFSET, HOST_STRCPY_ADDR),
+        (HELPER_RW_STRNCPY_SLOT_OFFSET, HOST_STRNCPY_ADDR),
+        (HELPER_RW_STRCAT_SLOT_OFFSET, HOST_STRCAT_ADDR),
+        (HELPER_RW_STRNCAT_SLOT_OFFSET, HOST_STRNCAT_ADDR),
+        (HELPER_RW_MEMCMP_SLOT_OFFSET, HOST_MEMCMP_ADDR),
+        (HELPER_RW_STRCMP_SLOT_OFFSET, HOST_STRCMP_ADDR),
+        (HELPER_RW_STRNCMP_SLOT_OFFSET, HOST_STRNCMP_ADDR),
+        (HELPER_RW_STRCOLL_SLOT_OFFSET, HOST_STRCOLL_ADDR),
+        (HELPER_RW_MEMCHR_MIRROR_SLOT_OFFSET, HOST_MEMCHR_ADDR),
+    ] {
+        let slot = GuestAddr::new(rw_base.wrapping_add(offset));
+        if memory.read32(slot)? == 0 {
+            memory.write32(slot, value)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn seed_bridge_compatible_helper_state<B: MemoryBus>(
+    memory: &mut B,
+    c_function_p: GuestAddr,
+    mr_table_addr: GuestAddr,
+    mr_malloc_addr: GuestAddr,
+    mr_free_addr: GuestAddr,
+    payload: HelperBootstrapPayload,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    apply_bridge_compatible_helper_state(memory, c_function_p, payload)?;
+    seed_helper_runtime_compat_slots(
+        memory,
+        c_function_p,
+        mr_table_addr,
+        mr_malloc_addr,
+        mr_free_addr,
+    )?;
     Ok(())
 }
 
@@ -1409,6 +1886,38 @@ fn seed_helper_runtime_compat_slots<B: MemoryBus>(
     Ok(())
 }
 
+fn seed_legacy_package_runtime_paths(
+    memory: &mut TestMemory,
+    mr_table_addr: GuestAddr,
+    mrp_path: &str,
+    start_name: &str,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    let pack_slot = memory.read32(GuestAddr::new(mr_table_addr.get().wrapping_add(0x190)))?;
+    let start_slot = memory.read32(GuestAddr::new(mr_table_addr.get().wrapping_add(0x194)))?;
+    let old_pack_slot = memory.read32(GuestAddr::new(mr_table_addr.get().wrapping_add(0x198)))?;
+    let old_start_slot = memory.read32(GuestAddr::new(mr_table_addr.get().wrapping_add(0x19C)))?;
+    let pack_name = mrp_guest_filename(mrp_path);
+
+    for (slot, value) in [
+        (pack_slot, pack_name.as_str()),
+        (start_slot, start_name),
+        (old_pack_slot, pack_name.as_str()),
+        (old_start_slot, start_name),
+    ] {
+        if slot == 0 {
+            continue;
+        }
+        for index in 0..255u32 {
+            memory.write8(GuestAddr::new(slot.wrapping_add(index)), 0)?;
+        }
+        for (index, byte) in value.as_bytes().iter().take(255).enumerate() {
+            memory.write8(GuestAddr::new(slot.wrapping_add(index as u32)), *byte)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn write_u32(
     memory: &mut TestMemory,
     addr: u32,
@@ -1437,24 +1946,47 @@ fn write_c_string(
 mod tests {
     use super::{
         apply_bridge_compatible_helper_state,
-        default_stack_top, format_step_trace_line, guest_ram_size, helper_bootstrap_sequence,
-        helper_bootstrap_sequence_for_mrp,
-        is_successful_stage_stop_reason,
+        default_stack_top, drain_host_runtime_events, format_step_trace_line, guest_ram_size,
+        helper_bootstrap_sequence, helper_bootstrap_sequence_for_mrp, is_successful_stage_stop_reason,
         helper_ext_search_paths, mrp_guest_filename, parse_args_from, parse_watch_u32,
-        prepare_helper_bootstrap_payload, prepare_start_dsm_payload,
-        push_recent_trace_line, seed_helper_runtime_compat_slots, HelperBootstrapPayload,
-        HelperRwWatch, should_skip_helper_bootstrap,
-        should_keep_waiting_for_host_events, to_presenter_rect, ParseOutcome,
+        prepare_helper_bootstrap_payload, prepare_start_dsm_payload, seed_legacy_package_runtime_paths,
+        seed_bridge_compatible_helper_state,
+        start_dsm_ext_name_for_mrp,
+        push_recent_trace_line, run_mrp, seed_helper_runtime_compat_slots,
+        HelperBootstrapPayload, HelperRwWatch, RunnerConfig, should_skip_helper_bootstrap,
+        should_keep_waiting_for_host_events, runtime_limit_reached, to_presenter_rect, ParseOutcome,
+        HELPER_RW_APP_INFO_CONTEXT_OFFSET, HELPER_RW_BRIDGE_COOKIE_OFFSET,
+        HELPER_RW_MEMCHR_MIRROR_SLOT_OFFSET, HELPER_RW_MEMSET_SLOT_OFFSET,
         HELPER_RW_INTERNAL_TABLE_OFFSET, HELPER_RW_MR_FREE_SLOT_OFFSET,
-        HELPER_RW_MR_MALLOC_SLOT_OFFSET, MR_C_INTERNAL_TABLE_SLOT_OFFSET,
+        HELPER_RW_MR_MALLOC_SLOT_OFFSET, HELPER_RW_PRINTF_SLOT_OFFSET,
+        HELPER_RW_RUNTIME_MODE_OFFSET, HELPER_RW_RUNTIME_READY_OFFSET,
+        HELPER_RW_STRNCPY_SLOT_OFFSET, HELPER_RW_VERSION_CODE_OFFSET,
+        HOST_MEMCHR_ADDR, HOST_MEMSET_ADDR, HOST_PRINTF_ADDR, HOST_STRNCPY_ADDR,
+        MR_C_INTERNAL_TABLE_SLOT_OFFSET,
     };
     use crate::{presenter::DirtyRect, DSM_INIT_CODE, HELPER_APP_INFO_SIZE, HELPER_EVENT_SIZE, write_event};
     use std::collections::VecDeque;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
     use vmrp_abi::MrpFile;
     use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
     use vmrp_cpu::{ExecutionMode, MemoryBus, StepTrace, TestMemory};
-    use vmrp_platform::HostScreenRegion;
+    use vmrp_platform::{ExtHost, HostScreenRegion, HostTimerCommand, SEND_APP_EVENT_ADDR};
+    use vmrp_runtime::{Runtime, RuntimeEvent};
+
+    fn read_c_string(memory: &TestMemory, addr: u32) -> String {
+        let mut bytes = Vec::new();
+        let mut cursor = addr;
+        loop {
+            let byte = memory.read8(GuestAddr::new(cursor)).unwrap();
+            if byte == 0 {
+                break;
+            }
+            bytes.push(byte);
+            cursor = cursor.wrapping_add(1);
+        }
+        String::from_utf8(bytes).unwrap()
+    }
 
     #[test]
     fn parse_args_enables_window_mode() {
@@ -1464,6 +1996,31 @@ mod tests {
             ParseOutcome::Config(config) => {
                 assert!(config.window);
                 assert_eq!(config.mrp_path, "demo.mrp");
+            }
+            ParseOutcome::Help => panic!("expected config outcome"),
+        }
+    }
+
+    #[test]
+    fn parse_args_accepts_runtime_limit() {
+        let parse = parse_args_from(["--runtime-ms", "250", "demo.mrp"]);
+
+        match parse.expect("parse should succeed") {
+            ParseOutcome::Config(config) => {
+                assert_eq!(config.mrp_path, "demo.mrp");
+                assert_eq!(config.runtime_limit_ms, Some(250));
+            }
+            ParseOutcome::Help => panic!("expected config outcome"),
+        }
+    }
+
+    #[test]
+    fn parse_args_defaults_to_higher_step_budget() {
+        let parse = parse_args_from(["demo.mrp"]);
+
+        match parse.expect("parse should succeed") {
+            ParseOutcome::Config(config) => {
+                assert_eq!(config.step_limit, 20_000);
             }
             ParseOutcome::Help => panic!("expected config outcome"),
         }
@@ -1505,6 +2062,141 @@ mod tests {
             4000,
             4000
         ));
+    }
+
+    #[test]
+    fn runtime_limit_helper_trips_after_elapsed_deadline() {
+        let started_at = Instant::now()
+            .checked_sub(Duration::from_millis(20))
+            .unwrap();
+
+        assert!(runtime_limit_reached(started_at, Some(10)));
+        assert!(!runtime_limit_reached(Instant::now(), Some(50)));
+        assert!(!runtime_limit_reached(started_at, None));
+    }
+
+    #[test]
+    fn host_runtime_events_bridge_into_runtime_queue() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        memory.write32(GuestAddr::new(0x280000), 150).unwrap();
+
+        let mut host = ExtHost::new(
+            GuestAddr::new(0x181000),
+            GuestAddr::new(0x182000),
+            GuestAddr::new(0x181100),
+            GuestAddr::new(0x181140),
+            GuestAddr::new(0x181180),
+            GuestAddr::new(0x181200),
+            GuestAddr::new(0x181300),
+            GuestAddr::new(0x183000),
+            0x10000,
+        );
+        let mut cpu = vmrp_cpu::Cpu::new(memory);
+        cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+        cpu.regs_mut().set_sp(0x280000);
+        cpu.regs_mut().set_pc(SEND_APP_EVENT_ADDR.get());
+        cpu.regs_mut().set_lr(0x80000);
+        cpu.regs_mut().set_reg(0, 0);
+        cpu.regs_mut().set_reg(1, 0x281000);
+        cpu.regs_mut().set_reg(2, 0);
+        cpu.regs_mut().set_reg(3, 0x282000);
+        assert!(host.handle(&mut cpu).unwrap());
+
+        cpu.regs_mut().set_pc(SEND_APP_EVENT_ADDR.get());
+        cpu.regs_mut().set_lr(0x80004);
+        cpu.regs_mut().set_reg(0, 1);
+        cpu.regs_mut().set_reg(1, 100);
+        cpu.regs_mut().set_reg(2, 2);
+        cpu.regs_mut().set_reg(3, 3);
+        assert!(host.handle(&mut cpu).unwrap());
+
+        let mut runtime = Runtime::new();
+        drain_host_runtime_events(&mut runtime, &mut host).unwrap();
+
+        assert_eq!(runtime.time_until_next_timer_ms(), Some(150));
+        assert_eq!(
+            runtime.pop_event(),
+            Some(RuntimeEvent::GuestEvent {
+                code: 100,
+                p0: 2,
+                p1: 3,
+            })
+        );
+        assert_eq!(runtime.pop_event(), None);
+        assert_eq!(host.take_timer_command(), None);
+        assert_eq!(host.pending_timer_delay_ms(), Some(150));
+        let _ = HostTimerCommand::Stop;
+    }
+
+    #[test]
+    fn bridge_package_run_dispatches_runtime_event_stage() {
+        let report = run_mrp(&RunnerConfig {
+            mrp_path: String::from(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp"),
+            window: false,
+            verbose: false,
+            step_limit: 4000,
+            trace_limit: 0,
+            runtime_limit_ms: None,
+        })
+        .unwrap();
+
+        assert!(
+            report.stages.iter().any(|stage| stage.label == "event"),
+            "bridge package should dispatch queued host app events into runtime stages: {:?}",
+            report
+                .stages
+                .iter()
+                .map(|stage| (stage.label.as_str(), stage.stop_reason.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn legacy_package_long_running_start_dsm_counts_as_running() {
+        let report = run_mrp(&RunnerConfig {
+            mrp_path: String::from(r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\ydqtwo.mrp"),
+            window: false,
+            verbose: false,
+            step_limit: 4000,
+            trace_limit: 0,
+            runtime_limit_ms: None,
+        })
+        .unwrap();
+
+        assert!(
+            report.run_ok,
+            "legacy package should treat long-running start_dsm as active runtime: {:?}",
+            report
+                .stages
+                .iter()
+                .map(|stage| (stage.label.as_str(), stage.stop_reason.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(report.stages.iter().any(|stage| {
+            stage.label == "start_dsm" && stage.stop_reason == "step budget exhausted"
+        }));
+    }
+
+    #[test]
+    fn plugin_only_package_can_boot_primary_ext_smoke() {
+        let report = run_mrp(&RunnerConfig {
+            mrp_path: String::from(
+                r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\plugins\ose\brwcore.mrp",
+            ),
+            window: false,
+            verbose: false,
+            step_limit: 4000,
+            trace_limit: 0,
+            runtime_limit_ms: None,
+        })
+        .unwrap();
+
+        assert!(report.run_ok);
+        assert!(report.stages.iter().any(|stage| stage.label == "plugin_ext_load"));
+        assert!(report
+            .stages
+            .iter()
+            .any(|stage| stage.label == "plugin_helper_init"));
     }
 
     #[test]
@@ -1562,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_bootstrap_sequence_is_reduced_for_bridge_compatible_packages() {
+    fn helper_bootstrap_sequence_still_runs_legacy_helper_protocol_for_bridge_packages() {
         let payload = HelperBootstrapPayload {
             version_code: 1968,
             app_info_addr: 0x280700,
@@ -1575,7 +2267,7 @@ mod tests {
 
         assert_eq!(
             helper_bootstrap_sequence_for_mrp(&mpc, 0x80000, payload),
-            vec![(0, 0x80000, 1968)]
+            helper_bootstrap_sequence(0x80000, payload)
         );
         assert_eq!(
             helper_bootstrap_sequence_for_mrp(&asm, 0x80000, payload),
@@ -1596,6 +2288,10 @@ mod tests {
         let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
         let c_function_p = GuestAddr::new(0x182000);
         let rw_base = 0x282020;
+        let payload = HelperBootstrapPayload {
+            version_code: 1968,
+            app_info_addr: 0x280700,
+        };
 
         memory.write32(c_function_p, rw_base).unwrap();
         memory.write32(GuestAddr::new(rw_base + 0x04), 1).unwrap();
@@ -1603,7 +2299,7 @@ mod tests {
         memory.write32(GuestAddr::new(rw_base + 0x160), 0x96000).unwrap();
         memory.write32(GuestAddr::new(rw_base + 0x164), 0x11800).unwrap();
 
-        apply_bridge_compatible_helper_state(&mut memory, c_function_p).unwrap();
+        apply_bridge_compatible_helper_state(&mut memory, c_function_p, payload).unwrap();
 
         assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x04)).unwrap(), 0);
         assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x15C)).unwrap(), 0x282AA8);
@@ -1612,12 +2308,165 @@ mod tests {
     }
 
     #[test]
+    fn bridge_compatible_helper_state_seeds_core_helper_slots_when_zeroed() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+        let payload = HelperBootstrapPayload {
+            version_code: 1968,
+            app_info_addr: 0x280700,
+        };
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        memory
+            .write32(GuestAddr::new(rw_base + HELPER_RW_RUNTIME_MODE_OFFSET), 1)
+            .unwrap();
+
+        apply_bridge_compatible_helper_state(&mut memory, c_function_p, payload).unwrap();
+
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_RUNTIME_READY_OFFSET))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_VERSION_CODE_OFFSET))
+                .unwrap(),
+            1968
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_APP_INFO_CONTEXT_OFFSET))
+                .unwrap(),
+            0x2806DC
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_BRIDGE_COOKIE_OFFSET))
+                .unwrap(),
+            0x270D
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_PRINTF_SLOT_OFFSET))
+                .unwrap(),
+            HOST_PRINTF_ADDR
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_MEMSET_SLOT_OFFSET))
+                .unwrap(),
+            HOST_MEMSET_ADDR
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_STRNCPY_SLOT_OFFSET))
+                .unwrap(),
+            HOST_STRNCPY_ADDR
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(rw_base + HELPER_RW_MEMCHR_MIRROR_SLOT_OFFSET))
+                .unwrap(),
+            HOST_MEMCHR_ADDR
+        );
+    }
+
+    #[test]
+    fn bridge_helper_runtime_seed_populates_helper_and_runtime_slots_together() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+        let mr_table_addr = GuestAddr::new(0x180000);
+        let payload = HelperBootstrapPayload {
+            version_code: 1968,
+            app_info_addr: 0x280700,
+        };
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        memory
+            .write32(GuestAddr::new(c_function_p.get().wrapping_add(4)), 0x3C4)
+            .unwrap();
+        memory
+            .write32(GuestAddr::new(rw_base + HELPER_RW_RUNTIME_MODE_OFFSET), 1)
+            .unwrap();
+        memory
+            .write32(
+                GuestAddr::new(
+                    mr_table_addr
+                        .get()
+                        .wrapping_add(MR_C_INTERNAL_TABLE_SLOT_OFFSET),
+                ),
+                0x180340,
+            )
+            .unwrap();
+
+        seed_bridge_compatible_helper_state(
+            &mut memory,
+            c_function_p,
+            mr_table_addr,
+            GuestAddr::new(0x181100),
+            GuestAddr::new(0x181140),
+            payload,
+        )
+        .unwrap();
+
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_RUNTIME_READY_OFFSET)
+                ))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_MALLOC_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181100
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_FREE_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181140
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_STRNCPY_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            HOST_STRNCPY_ADDR
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_INTERNAL_TABLE_OFFSET)
+                ))
+                .unwrap(),
+            0x180340
+        );
+    }
+
+    #[test]
     fn start_dsm_payload_can_target_custom_runtime_base() {
         let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let mrp = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
 
         let start_t_addr = prepare_start_dsm_payload(
             &mut memory,
             0x280400,
+            &mrp,
             r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
         )
         .unwrap();
@@ -1627,12 +2476,17 @@ mod tests {
     }
 
     #[test]
-    fn start_dsm_payload_keeps_legacy_start_mr_entry_for_mpc_package() {
+    fn start_dsm_payload_uses_game_ext_entry_for_bridge_compatible_package() {
         let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let mrp = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
 
         let start_t_addr = prepare_start_dsm_payload(
             &mut memory,
             0x280400,
+            &mrp,
             r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
         )
         .unwrap();
@@ -1647,7 +2501,19 @@ mod tests {
             bytes.push(byte);
         }
 
-        assert_eq!(String::from_utf8(bytes).unwrap(), "start.mr");
+        assert_eq!(String::from_utf8(bytes).unwrap(), "game.ext");
+    }
+
+    #[test]
+    fn start_dsm_ext_name_stays_start_mr_for_legacy_packages() {
+        let asm = MrpFile::from_path(PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\asm.mrp")).unwrap();
+        let mpc = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
+
+        assert_eq!(start_dsm_ext_name_for_mrp(&asm), "start.mr");
+        assert_eq!(start_dsm_ext_name_for_mrp(&mpc), "game.ext");
     }
 
     #[test]
@@ -1778,6 +2644,43 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn seed_legacy_package_runtime_paths_populates_pack_and_start_slots() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let bootstrap = vmrp_platform::ExtBootstrap {
+            mr_table_addr: GuestAddr::new(0x180000),
+            mr_c_function_new_addr: GuestAddr::new(0x181000),
+            mr_c_function_p_addr: GuestAddr::new(0x182000),
+            mr_malloc_addr: GuestAddr::new(0x181100),
+            mr_free_addr: GuestAddr::new(0x181140),
+            mr_realloc_addr: GuestAddr::new(0x181180),
+            mr_malloc_result_addr: GuestAddr::new(0x183000),
+            memcpy_addr: GuestAddr::new(0x181200),
+            memset_addr: GuestAddr::new(0x181300),
+        };
+        bootstrap
+            .apply(&mut memory, DEFAULT_LAYOUT.code_address())
+            .unwrap();
+
+        seed_legacy_package_runtime_paths(
+            &mut memory,
+            GuestAddr::new(0x180000),
+            r"D:\opt\rust\vmrp\demo\demo.mrp",
+            "game.ext",
+        )
+        .unwrap();
+
+        let pack_slot = memory.read32(GuestAddr::new(0x180190)).unwrap();
+        let start_slot = memory.read32(GuestAddr::new(0x180194)).unwrap();
+        let old_pack_slot = memory.read32(GuestAddr::new(0x180198)).unwrap();
+        let old_start_slot = memory.read32(GuestAddr::new(0x18019C)).unwrap();
+
+        assert_eq!(read_c_string(&memory, pack_slot), "demo.mrp");
+        assert_eq!(read_c_string(&memory, start_slot), "game.ext");
+        assert_eq!(read_c_string(&memory, old_pack_slot), "demo.mrp");
+        assert_eq!(read_c_string(&memory, old_start_slot), "game.ext");
     }
 
 
