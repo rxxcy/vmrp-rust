@@ -36,8 +36,12 @@ const LEGACY_EXT_TABLE_SIZE: u32 = 0x248;
 const LEGACY_TIMER_STRUCT_SIZE: u32 = 0x20;
 const MR_C_FUNCTION_CONTEXT_EXT_CHUNK_OFFSET: u32 = 0x0C;
 const MR_C_FUNCTION_CONTEXT_STACK_OFFSET: u32 = 0x10;
+const MR_C_INTERNAL_TABLE_SLOT_OFFSET: u32 = 0x5C;
 const LEGACY_EXT_CHUNK_CHECK: u32 = 0x7FD854EB;
 const LEGACY_TIMER_CHECK: u32 = 0x79AB_BCCF;
+const HELPER_RW_MR_MALLOC_SLOT_OFFSET: u32 = 0x10C;
+const HELPER_RW_MR_FREE_SLOT_OFFSET: u32 = 0x110;
+const HELPER_RW_INTERNAL_TABLE_OFFSET: u32 = 0x168;
 const WINDOW_TITLE: &str = "vmrp-rust";
 const SCREEN_WIDTH: usize = 240;
 const SCREEN_HEIGHT: usize = 320;
@@ -84,6 +88,95 @@ struct SeededExtChunkDescriptor {
     ext_chunk_addr: u32,
     ext_table_addr: u32,
     timer_addr: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperRwWatchChange {
+    offset: u32,
+    old: u32,
+    new: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HelperRwWatchSample {
+    rw_base: Option<u32>,
+    base_reset: bool,
+    changes: Vec<HelperRwWatchChange>,
+}
+
+#[derive(Debug, Clone)]
+struct HelperRwWatch {
+    c_function_p: GuestAddr,
+    offsets: Vec<u32>,
+    rw_base: Option<u32>,
+    values: Vec<u32>,
+}
+
+impl HelperRwWatch {
+    fn new<I>(c_function_p: GuestAddr, offsets: I) -> Self
+    where
+        I: IntoIterator<Item = u32>,
+    {
+        let mut offsets = offsets.into_iter().collect::<Vec<_>>();
+        offsets.sort_unstable();
+        offsets.dedup();
+        let values = vec![0; offsets.len()];
+        Self {
+            c_function_p,
+            offsets,
+            rw_base: None,
+            values,
+        }
+    }
+
+    fn sample<B: MemoryBus>(
+        &mut self,
+        memory: &B,
+    ) -> Result<HelperRwWatchSample, vmrp_cpu::MemoryAccessError> {
+        let rw_base = memory.read32(self.c_function_p)?;
+        if rw_base == 0 {
+            self.rw_base = None;
+            self.values.fill(0);
+            return Ok(HelperRwWatchSample {
+                rw_base: None,
+                base_reset: false,
+                changes: Vec::new(),
+            });
+        }
+
+        let current_base = Some(rw_base);
+        if self.rw_base != current_base {
+            self.rw_base = current_base;
+            for (index, offset) in self.offsets.iter().copied().enumerate() {
+                self.values[index] = memory.read32(GuestAddr::new(rw_base.wrapping_add(offset)))?;
+            }
+            return Ok(HelperRwWatchSample {
+                rw_base: current_base,
+                base_reset: true,
+                changes: Vec::new(),
+            });
+        }
+
+        let mut changes = Vec::new();
+        for (index, offset) in self.offsets.iter().copied().enumerate() {
+            let value = memory.read32(GuestAddr::new(rw_base.wrapping_add(offset)))?;
+            let old = self.values[index];
+            if value != old {
+                changes.push(HelperRwWatchChange {
+                    offset,
+                    old,
+                    new: value,
+                });
+                self.values[index] = value;
+            }
+        }
+
+        Ok(HelperRwWatchSample {
+            rw_base: current_base,
+            base_reset: false,
+            changes,
+        })
+    }
 }
 
 fn main() {
@@ -379,6 +472,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
 
     let mut runtime = Runtime::new();
     let mut stages = Vec::new();
+    let mut helper_rw_watch = None;
     let mut presenter = if config.window {
         Some(
             WindowPresenter::new(WINDOW_TITLE, SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -396,6 +490,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
         config.trace_limit,
         "ext_init",
         config.verbose,
+        &mut helper_rw_watch,
         &mut presenter,
     );
     stages.push(stage_ext_init);
@@ -407,6 +502,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
     let mut start_dsm_ret = MR_FAILED;
 
     if let Some(helper) = helper {
+        helper_rw_watch = helper_rw_watch_from_env(host.c_function_p_addr());
         seed_ext_chunk_descriptor(
             cpu.memory_mut(),
             &mut host,
@@ -428,7 +524,7 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
                 .map_err(|err| format!("prepare helper bootstrap payload failed: {err:?}"))?;
 
         for (code, event_addr, input_len) in
-            helper_bootstrap_sequence(blob.load_address().get(), helper_bootstrap)
+            helper_bootstrap_sequence_for_mrp(&mrp, blob.load_address().get(), helper_bootstrap)
         {
             let label = match code {
                 6 => "helper_version",
@@ -452,13 +548,28 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
                 config.trace_limit,
                 label,
                 config.verbose,
+                &mut helper_rw_watch,
                 &mut presenter,
             );
             stages.push(stage);
-            dump_helper_state(cpu.memory(), host.c_function_p_addr(), label);
+            if config.verbose {
+                dump_helper_state(cpu.memory(), host.c_function_p_addr(), label);
+            }
+        }
+        if should_skip_helper_bootstrap(&mrp) {
+            apply_bridge_compatible_helper_state(cpu.memory_mut(), host.c_function_p_addr())
+                .map_err(|err| format!("apply bridge-compatible helper state failed: {err:?}"))?;
         }
         apply_helper_rw_debug_overrides(cpu.memory_mut(), host.c_function_p_addr(), config.verbose)
             .map_err(|err| format!("apply helper rw debug overrides failed: {err:?}"))?;
+        seed_helper_runtime_compat_slots(
+            cpu.memory_mut(),
+            host.c_function_p_addr(),
+            bootstrap.mr_table_addr,
+            bootstrap.mr_malloc_addr,
+            bootstrap.mr_free_addr,
+        )
+        .map_err(|err| format!("seed helper runtime compat slots failed: {err:?}"))?;
 
         let dsm_require_funcs_addr = runtime_data_base + RUNTIME_DSM_REQUIRE_FUNCS_OFFSET;
         host.install_dsm_require_funcs(
@@ -492,11 +603,12 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             config.trace_limit,
             "dsm_init",
             config.verbose,
+            &mut helper_rw_watch,
             &mut presenter,
         );
         dsm_init_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_dsm_init);
-        if true {
+        if config.verbose {
             dump_helper_state(cpu.memory(), host.c_function_p_addr(), "dsm_init");
         }
 
@@ -530,11 +642,12 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             config.trace_limit,
             "start_dsm",
             config.verbose,
+            &mut helper_rw_watch,
             &mut presenter,
         );
         start_dsm_ret = cpu.regs().reg(0) as i32;
         stages.push(stage_start_dsm);
-        if true {
+        if config.verbose {
             dump_helper_state(cpu.memory(), host.c_function_p_addr(), "start_dsm");
         }
 
@@ -545,19 +658,21 @@ fn run_mrp(config: &RunnerConfig) -> Result<RunReport, String> {
             helper,
             runtime_data_base,
             config,
+            &mut helper_rw_watch,
             &mut presenter,
             &mut stages,
         )?;
     }
 
-    let no_unimplemented = stages
-        .iter()
-        .all(|stage| !stage.stop_reason.contains("UnimplementedInstruction"));
+    let no_runtime_faults = stages.iter().all(|stage| {
+        !stage.stop_reason.contains("UnimplementedInstruction")
+            && is_successful_stage_stop_reason(&stage.stop_reason)
+    });
     let has_helper = helper_addr.is_some();
     let version_ok = dsm_init_ret == VMRP_VER || dsm_init_ret == 0;
     let start_ok = start_dsm_ret != MR_FAILED;
 
-    let run_ok = no_unimplemented && has_helper && version_ok && start_ok;
+    let run_ok = no_runtime_faults && has_helper && version_ok && start_ok;
 
     Ok(RunReport {
         mrp_path: config.mrp_path.clone(),
@@ -610,6 +725,10 @@ fn should_dump_recent_trace_for_guest_log(msg: &str) -> bool {
     .any(|needle| msg.contains(needle))
 }
 
+fn is_successful_stage_stop_reason(reason: &str) -> bool {
+    matches!(reason, "program returned to null pc" | "guest requested exit")
+}
+
 fn dump_recent_trace(label: &str, recent: &VecDeque<String>, limit: usize) {
     println!("stage={label} recent_trace_begin");
     let start = recent.len().saturating_sub(limit);
@@ -617,6 +736,55 @@ fn dump_recent_trace(label: &str, recent: &VecDeque<String>, limit: usize) {
         println!("{line}");
     }
     println!("stage={label} recent_trace_end");
+}
+
+fn parse_watch_u32(value: &str) -> Option<u32> {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+        .or_else(|| trimmed.parse::<u32>().ok())
+}
+
+fn helper_rw_watch_from_env(c_function_p: GuestAddr) -> Option<HelperRwWatch> {
+    let raw = std::env::var("VMRP_HELPER_RW_WATCH").ok()?;
+    let offsets = if raw.trim().is_empty() || raw.trim() == "1" {
+        vec![
+            0x120u32, 0x124, 0x128, 0x12C, 0x130, 0x134, 0x138, 0x13C, 0x140, 0x15C, 0x160,
+            0x164, 0x168,
+        ]
+    } else {
+        raw.split(',')
+            .filter_map(parse_watch_u32)
+            .collect::<Vec<_>>()
+    };
+    if offsets.is_empty() {
+        return None;
+    }
+    Some(HelperRwWatch::new(c_function_p, offsets))
+}
+
+fn log_helper_rw_watch_sample(
+    label: &str,
+    observed: usize,
+    step_kind: &str,
+    pc: u32,
+    sample: &HelperRwWatchSample,
+) {
+    if let Some(rw_base) = sample.rw_base {
+        if sample.base_reset {
+            println!(
+                "stage={label} helper_rw_watch_base[{observed}] kind={step_kind} pc=0x{pc:08X} rw_base=0x{rw_base:X}"
+            );
+        }
+        for change in &sample.changes {
+            println!(
+                "stage={label} helper_rw_watch[{observed}] kind={step_kind} pc=0x{pc:08X} offset=0x{:X} old=0x{:X} new=0x{:X}",
+                change.offset, change.old, change.new
+            );
+        }
+    }
 }
 
 fn run_loop(
@@ -627,6 +795,7 @@ fn run_loop(
     trace_limit: usize,
     label: &'static str,
     verbose: bool,
+    helper_rw_watch: &mut Option<HelperRwWatch>,
     presenter: &mut Option<WindowPresenter>,
 ) -> StageResult {
     let mut observed = 0usize;
@@ -657,10 +826,16 @@ fn run_loop(
         match host.handle(cpu) {
             Ok(true) => {
                 observed += 1;
-                let line = format!("{label}_host_step[{observed}] pc=0x{:08X}", cpu.regs().pc());
+                let pc = cpu.regs().pc();
+                let line = format!("{label}_host_step[{observed}] pc=0x{pc:08X}");
                 push_recent_trace_line(&mut recent, RECENT_TRACE_CAPACITY, line.clone());
                 if verbose && observed <= trace_limit {
                     println!("{line}");
+                }
+                if let Some(watch) = helper_rw_watch.as_mut() {
+                    if let Ok(sample) = watch.sample(cpu.memory()) {
+                        log_helper_rw_watch_sample(label, observed, "host", pc, &sample);
+                    }
                 }
                 if let Err(err) = drain_host_ui(runtime, host, presenter) {
                     return RuntimeStepResult::Stop(err);
@@ -688,6 +863,17 @@ fn run_loop(
                 push_recent_trace_line(&mut recent, RECENT_TRACE_CAPACITY, line.clone());
                 if verbose && observed <= trace_limit {
                     println!("{line}");
+                }
+                if let Some(watch) = helper_rw_watch.as_mut() {
+                    if let Ok(sample) = watch.sample(cpu.memory()) {
+                        log_helper_rw_watch_sample(
+                            label,
+                            observed,
+                            "guest",
+                            step.trace.pc,
+                            &sample,
+                        );
+                    }
                 }
                 RuntimeStepResult::GuestStep
             }
@@ -761,6 +947,7 @@ fn drive_runtime_events(
     helper: GuestAddr,
     runtime_data_base: u32,
     config: &RunnerConfig,
+    helper_rw_watch: &mut Option<HelperRwWatch>,
     presenter: &mut Option<WindowPresenter>,
     stages: &mut Vec<StageResult>,
 ) -> Result<(), String> {
@@ -801,6 +988,7 @@ fn drive_runtime_events(
                         config.trace_limit,
                         "timer",
                         config.verbose,
+                        helper_rw_watch,
                         presenter,
                     );
                     stages.push(stage_timer);
@@ -838,6 +1026,7 @@ fn drive_runtime_events(
                         config.trace_limit,
                         "event",
                         config.verbose,
+                        helper_rw_watch,
                         presenter,
                     );
                     stages.push(stage_event);
@@ -1067,7 +1256,7 @@ fn dump_helper_state(memory: &TestMemory, c_function_p: GuestAddr, label: &str) 
     println!("{label}_ext_chunk=0x{ext_chunk:X}");
     println!("{label}_stack=0x{stack:X}");
     if rw_base != 0 {
-        for offset in [0x20u32, 0x24, 0x104, 0x108, 0x10C, 0x110, 0x168, 0x1A8, 0x1AC, 0x220, 0x224, 0x1BC, 0x1C0] {
+        for offset in [0x00u32, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x2C, 0x30, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x88, 0x8C, 0x100, 0x104, 0x108, 0x10C, 0x110, 0x120, 0x124, 0x128, 0x12C, 0x130, 0x134, 0x138, 0x13C, 0x140, 0x15C, 0x160, 0x164, 0x168, 0x1A8, 0x1AC, 0x220, 0x224, 0x1BC, 0x1C0] {
             let value = memory
                 .read32(GuestAddr::new(rw_base.wrapping_add(offset)))
                 .unwrap_or(0);
@@ -1121,21 +1310,20 @@ fn helper_bootstrap_sequence(
     ]
 }
 
-fn primary_start_ext_name(mrp: &MrpFile) -> Option<String> {
-    let mut ext_names = mrp
-        .entries()
-        .iter()
-        .map(|entry| entry.name())
-        .filter(|name| name.ends_with(".ext") && *name != "cfunction.ext")
-        .collect::<Vec<_>>();
-    ext_names.sort_unstable();
+fn should_skip_helper_bootstrap(mrp: &MrpFile) -> bool {
+    mrp.entry("game.ext").is_some() && mrp.entry("plugins.lst").is_some()
+}
 
-    ext_names
-        .iter()
-        .copied()
-        .find(|name| *name == "game.ext")
-        .or_else(|| ext_names.into_iter().next())
-        .map(str::to_string)
+fn helper_bootstrap_sequence_for_mrp(
+    mrp: &MrpFile,
+    helper_load_addr: u32,
+    payload: HelperBootstrapPayload,
+) -> Vec<(u32, u32, u32)> {
+    if should_skip_helper_bootstrap(mrp) {
+        vec![(0, helper_load_addr, payload.version_code)]
+    } else {
+        helper_bootstrap_sequence(helper_load_addr, payload)
+    }
 }
 
 fn mrp_guest_filename(mrp_path: &str) -> String {
@@ -1151,11 +1339,7 @@ fn prepare_start_dsm_payload(
 ) -> Result<u32, vmrp_cpu::MemoryAccessError> {
     let mut cursor = runtime_data_base;
     let filename_ptr = write_c_string(memory, &mut cursor, &mrp_guest_filename(mrp_path))?;
-    let ext_name = MrpFile::from_path(mrp_path)
-        .ok()
-        .and_then(|mrp| primary_start_ext_name(&mrp))
-        .unwrap_or_else(|| String::from("start.mr"));
-    let ext_ptr = write_c_string(memory, &mut cursor, &ext_name)?;
+    let ext_ptr = write_c_string(memory, &mut cursor, "start.mr")?;
 
     let start_t_addr = runtime_data_base + RUNTIME_START_T_OFFSET;
     write_u32(memory, start_t_addr, filename_ptr)?;
@@ -1176,6 +1360,53 @@ fn write_event(
     write_u32(memory, event_addr + 4, p0)?;
     write_u32(memory, event_addr + 8, p1)?;
     Ok(event_addr)
+}
+
+fn apply_bridge_compatible_helper_state<B: MemoryBus>(
+    memory: &mut B,
+    c_function_p: GuestAddr,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    let rw_base = memory.read32(GuestAddr::new(c_function_p.get()))?;
+    if rw_base == 0 {
+        return Ok(());
+    }
+    memory.write32(GuestAddr::new(rw_base.wrapping_add(0x04)), 0)?;
+    Ok(())
+}
+
+fn seed_helper_runtime_compat_slots<B: MemoryBus>(
+    memory: &mut B,
+    c_function_p: GuestAddr,
+    mr_table_addr: GuestAddr,
+    mr_malloc_addr: GuestAddr,
+    mr_free_addr: GuestAddr,
+) -> Result<(), vmrp_cpu::MemoryAccessError> {
+    let rw_base = memory.read32(GuestAddr::new(c_function_p.get()))?;
+    let rw_len = memory.read32(GuestAddr::new(c_function_p.get().wrapping_add(4)))?;
+    if rw_base == 0 {
+        return Ok(());
+    }
+
+    let internal_table = memory.read32(GuestAddr::new(
+        mr_table_addr
+            .get()
+            .wrapping_add(MR_C_INTERNAL_TABLE_SLOT_OFFSET),
+    ))?;
+    for (offset, value) in [
+        (HELPER_RW_MR_MALLOC_SLOT_OFFSET, mr_malloc_addr.get()),
+        (HELPER_RW_MR_FREE_SLOT_OFFSET, mr_free_addr.get()),
+        (HELPER_RW_INTERNAL_TABLE_OFFSET, internal_table),
+    ] {
+        if rw_len < offset.wrapping_add(4) {
+            continue;
+        }
+        let slot = GuestAddr::new(rw_base.wrapping_add(offset));
+        if memory.read32(slot)? == 0 && value != 0 {
+            memory.write32(slot, value)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn write_u32(
@@ -1205,11 +1436,17 @@ fn write_c_string(
 #[cfg(test)]
 mod tests {
     use super::{
+        apply_bridge_compatible_helper_state,
         default_stack_top, format_step_trace_line, guest_ram_size, helper_bootstrap_sequence,
-        helper_ext_search_paths, mrp_guest_filename, parse_args_from,
-        prepare_helper_bootstrap_payload, prepare_start_dsm_payload, primary_start_ext_name,
-        push_recent_trace_line, HelperBootstrapPayload, should_keep_waiting_for_host_events,
-        to_presenter_rect, ParseOutcome,
+        helper_bootstrap_sequence_for_mrp,
+        is_successful_stage_stop_reason,
+        helper_ext_search_paths, mrp_guest_filename, parse_args_from, parse_watch_u32,
+        prepare_helper_bootstrap_payload, prepare_start_dsm_payload,
+        push_recent_trace_line, seed_helper_runtime_compat_slots, HelperBootstrapPayload,
+        HelperRwWatch, should_skip_helper_bootstrap,
+        should_keep_waiting_for_host_events, to_presenter_rect, ParseOutcome,
+        HELPER_RW_INTERNAL_TABLE_OFFSET, HELPER_RW_MR_FREE_SLOT_OFFSET,
+        HELPER_RW_MR_MALLOC_SLOT_OFFSET, MR_C_INTERNAL_TABLE_SLOT_OFFSET,
     };
     use crate::{presenter::DirtyRect, DSM_INIT_CODE, HELPER_APP_INFO_SIZE, HELPER_EVENT_SIZE, write_event};
     use std::collections::VecDeque;
@@ -1313,6 +1550,68 @@ mod tests {
     }
 
     #[test]
+    fn helper_bootstrap_is_skipped_for_bridge_compatible_game_ext_packages() {
+        let mpc = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
+        let asm = MrpFile::from_path(PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\asm.mrp")).unwrap();
+
+        assert!(should_skip_helper_bootstrap(&mpc));
+        assert!(!should_skip_helper_bootstrap(&asm));
+    }
+
+    #[test]
+    fn helper_bootstrap_sequence_is_reduced_for_bridge_compatible_packages() {
+        let payload = HelperBootstrapPayload {
+            version_code: 1968,
+            app_info_addr: 0x280700,
+        };
+        let mpc = MrpFile::from_path(PathBuf::from(
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        ))
+        .unwrap();
+        let asm = MrpFile::from_path(PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\asm.mrp")).unwrap();
+
+        assert_eq!(
+            helper_bootstrap_sequence_for_mrp(&mpc, 0x80000, payload),
+            vec![(0, 0x80000, 1968)]
+        );
+        assert_eq!(
+            helper_bootstrap_sequence_for_mrp(&asm, 0x80000, payload),
+            helper_bootstrap_sequence(0x80000, payload)
+        );
+    }
+
+    #[test]
+    fn run_ok_only_accepts_known_success_stop_reasons() {
+        assert!(is_successful_stage_stop_reason("program returned to null pc"));
+        assert!(is_successful_stage_stop_reason("guest requested exit"));
+        assert!(!is_successful_stage_stop_reason("Memory(OutOfRange(GuestAddr(4)))"));
+        assert!(!is_successful_stage_stop_reason("step budget exhausted"));
+    }
+
+    #[test]
+    fn bridge_compatible_helper_state_clears_runtime_mode_flag_but_keeps_heap_markers() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        memory.write32(GuestAddr::new(rw_base + 0x04), 1).unwrap();
+        memory.write32(GuestAddr::new(rw_base + 0x15C), 0x282AA8).unwrap();
+        memory.write32(GuestAddr::new(rw_base + 0x160), 0x96000).unwrap();
+        memory.write32(GuestAddr::new(rw_base + 0x164), 0x11800).unwrap();
+
+        apply_bridge_compatible_helper_state(&mut memory, c_function_p).unwrap();
+
+        assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x04)).unwrap(), 0);
+        assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x15C)).unwrap(), 0x282AA8);
+        assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x160)).unwrap(), 0x96000);
+        assert_eq!(memory.read32(GuestAddr::new(rw_base + 0x164)).unwrap(), 0x11800);
+    }
+
+    #[test]
     fn start_dsm_payload_can_target_custom_runtime_base() {
         let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
 
@@ -1328,6 +1627,30 @@ mod tests {
     }
 
     #[test]
+    fn start_dsm_payload_keeps_legacy_start_mr_entry_for_mpc_package() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+
+        let start_t_addr = prepare_start_dsm_payload(
+            &mut memory,
+            0x280400,
+            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
+        )
+        .unwrap();
+
+        let ext_ptr = memory.read32(GuestAddr::new(start_t_addr + 4)).unwrap();
+        let mut bytes = Vec::new();
+        for offset in 0..16u32 {
+            let byte = memory.read8(GuestAddr::new(ext_ptr.wrapping_add(offset))).unwrap();
+            if byte == 0 {
+                break;
+            }
+            bytes.push(byte);
+        }
+
+        assert_eq!(String::from_utf8(bytes).unwrap(), "start.mr");
+    }
+
+    #[test]
     fn helper_event_payload_matches_legacy_bridge_event_t_layout() {
         let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
 
@@ -1338,6 +1661,123 @@ mod tests {
         assert_eq!(memory.read32(GuestAddr::new(0x280120)).unwrap(), DSM_INIT_CODE as u32);
         assert_eq!(memory.read32(GuestAddr::new(0x280124)).unwrap(), 0x1111);
         assert_eq!(memory.read32(GuestAddr::new(0x280128)).unwrap(), 0x2222);
+    }
+
+    #[test]
+    fn seed_helper_runtime_compat_slots_populates_large_helper_layout() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+        let mr_table_addr = GuestAddr::new(0x180000);
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        memory
+            .write32(GuestAddr::new(c_function_p.get().wrapping_add(4)), 0x3C4)
+            .unwrap();
+        memory
+            .write32(
+                GuestAddr::new(
+                    mr_table_addr
+                        .get()
+                        .wrapping_add(MR_C_INTERNAL_TABLE_SLOT_OFFSET),
+                ),
+                0x180340,
+            )
+            .unwrap();
+
+        seed_helper_runtime_compat_slots(
+            &mut memory,
+            c_function_p,
+            mr_table_addr,
+            GuestAddr::new(0x181100),
+            GuestAddr::new(0x181140),
+        )
+        .unwrap();
+
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_MALLOC_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181100
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_FREE_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181140
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_INTERNAL_TABLE_OFFSET)
+                ))
+                .unwrap(),
+            0x180340
+        );
+    }
+
+    #[test]
+    fn seed_helper_runtime_compat_slots_skips_offsets_outside_small_rw_layout() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+        let mr_table_addr = GuestAddr::new(0x180000);
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        memory
+            .write32(
+                GuestAddr::new(c_function_p.get().wrapping_add(4)),
+                HELPER_RW_MR_FREE_SLOT_OFFSET.wrapping_add(4),
+            )
+            .unwrap();
+        memory
+            .write32(
+                GuestAddr::new(
+                    mr_table_addr
+                        .get()
+                        .wrapping_add(MR_C_INTERNAL_TABLE_SLOT_OFFSET),
+                ),
+                0x180340,
+            )
+            .unwrap();
+
+        seed_helper_runtime_compat_slots(
+            &mut memory,
+            c_function_p,
+            mr_table_addr,
+            GuestAddr::new(0x181100),
+            GuestAddr::new(0x181140),
+        )
+        .unwrap();
+
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_MALLOC_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181100
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_MR_FREE_SLOT_OFFSET)
+                ))
+                .unwrap(),
+            0x181140
+        );
+        assert_eq!(
+            memory
+                .read32(GuestAddr::new(
+                    rw_base.wrapping_add(HELPER_RW_INTERNAL_TABLE_OFFSET)
+                ))
+                .unwrap(),
+            0
+        );
     }
 
 
@@ -1356,16 +1796,6 @@ mod tests {
                 (0, 0x80000, 1968),
             ]
         );
-    }
-
-    #[test]
-    fn primary_start_ext_name_prefers_game_ext_for_mpc_package() {
-        let mrp = MrpFile::from_path(PathBuf::from(
-            r"D:\opt\rust\vmrp\wasm\dist\fs\mythroad\mpc.mrp",
-        ))
-        .unwrap();
-
-        assert_eq!(primary_start_ext_name(&mrp).as_deref(), Some("game.ext"));
     }
 
     #[test]
@@ -1412,6 +1842,38 @@ mod tests {
     }
 
     #[test]
+    fn helper_rw_watch_reports_value_changes_inside_watched_window() {
+        let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+        let c_function_p = GuestAddr::new(0x182000);
+        let rw_base = 0x282020;
+        let mut watch = HelperRwWatch::new(c_function_p, [0x120u32, 0x124]);
+
+        memory.write32(c_function_p, rw_base).unwrap();
+        let sample = watch.sample(&memory).unwrap();
+        assert_eq!(sample.rw_base, Some(rw_base));
+        assert!(sample.base_reset);
+        assert!(sample.changes.is_empty());
+
+        memory
+            .write32(GuestAddr::new(rw_base.wrapping_add(0x124)), 0xDEADBEEF)
+            .unwrap();
+        let sample = watch.sample(&memory).unwrap();
+        assert_eq!(sample.rw_base, Some(rw_base));
+        assert!(!sample.base_reset);
+        assert_eq!(sample.changes.len(), 1);
+        assert_eq!(sample.changes[0].offset, 0x124);
+        assert_eq!(sample.changes[0].old, 0);
+        assert_eq!(sample.changes[0].new, 0xDEADBEEF);
+    }
+
+    #[test]
+    fn parse_watch_u32_accepts_hex_and_decimal_strings() {
+        assert_eq!(parse_watch_u32("0x124"), Some(0x124));
+        assert_eq!(parse_watch_u32("320"), Some(320));
+        assert_eq!(parse_watch_u32("wat"), None);
+    }
+
+    #[test]
     fn formatted_step_trace_includes_mode_pc_and_opcode() {
         let rendered = format_step_trace_line(
             "start_dsm",
@@ -1430,6 +1892,11 @@ mod tests {
         );
     }
 }
+
+
+
+
+
 
 
 

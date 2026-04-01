@@ -47,6 +47,30 @@ const MR_FILE_RECREATE: u32 = 16;
 const MR_SEEK_SET: u32 = 0;
 const MR_SEEK_CUR: u32 = 1;
 const MR_SEEK_END: u32 = 2;
+const MR_GET_HOST_BY_NAME_OFFSET: u32 = 0x6C;
+const MR_INIT_NETWORK_OFFSET: u32 = 0x70;
+const MR_CLOSE_NETWORK_OFFSET: u32 = 0x74;
+const MR_SOCKET_OFFSET: u32 = 0x78;
+const MR_CONNECT_OFFSET: u32 = 0x7C;
+const MR_GET_SOCKET_STATE_OFFSET: u32 = 0x80;
+const MR_CLOSE_SOCKET_OFFSET: u32 = 0x84;
+const MR_RECV_OFFSET: u32 = 0x88;
+const MR_SEND_OFFSET: u32 = 0x8C;
+const MR_RECVFROM_OFFSET: u32 = 0x90;
+const MR_SENDTO_OFFSET: u32 = 0x94;
+const MR_START_SHAKE_OFFSET: u32 = 0x98;
+const MR_STOP_SHAKE_OFFSET: u32 = 0x9C;
+const MR_PLAY_SOUND_OFFSET: u32 = 0xA0;
+const MR_STOP_SOUND_OFFSET: u32 = 0xA4;
+const MR_DIALOG_CREATE_OFFSET: u32 = 0xA8;
+const MR_DIALOG_RELEASE_OFFSET: u32 = 0xAC;
+const MR_DIALOG_REFRESH_OFFSET: u32 = 0xB0;
+const MR_TEXT_CREATE_OFFSET: u32 = 0xB4;
+const MR_TEXT_RELEASE_OFFSET: u32 = 0xB8;
+const MR_TEXT_REFRESH_OFFSET: u32 = 0xBC;
+const MR_EDIT_CREATE_OFFSET: u32 = 0xC0;
+const MR_EDIT_RELEASE_OFFSET: u32 = 0xC4;
+const MR_EDIT_GET_TEXT_OFFSET: u32 = 0xC8;
 const MR_GET_SCREEN_INFO_OFFSET: u32 = 0x140;
 const MR_TEST_COM_OFFSET: u32 = 0x208;
 const MR_TEST_COM1_OFFSET: u32 = 0x20C;
@@ -80,6 +104,32 @@ const STRTOUL_ADDR: GuestAddr = GuestAddr::new(0x181520);
 const MR_PRINTF_ADDR: GuestAddr = GuestAddr::new(0x181530);
 
 pub const SEND_APP_EVENT_ADDR: GuestAddr = GuestAddr::new(0x181540);
+pub const MR_EXT_FUNCTION_NEW_ADDR: GuestAddr = GuestAddr::new(0x181BC0);
+const RET_ZERO_STUB_ADDR: GuestAddr = GuestAddr::new(0x181580);
+const MR_GET_HOST_BY_NAME_ADDR: GuestAddr = GuestAddr::new(0x181900);
+const MR_INIT_NETWORK_ADDR: GuestAddr = GuestAddr::new(0x181940);
+const MR_CLOSE_NETWORK_ADDR: GuestAddr = GuestAddr::new(0x181980);
+const MR_SOCKET_ADDR: GuestAddr = GuestAddr::new(0x1819C0);
+const MR_CONNECT_ADDR: GuestAddr = GuestAddr::new(0x181A00);
+const MR_GET_SOCKET_STATE_ADDR: GuestAddr = GuestAddr::new(0x181A40);
+const MR_CLOSE_SOCKET_ADDR: GuestAddr = GuestAddr::new(0x181A80);
+const MR_RECV_ADDR: GuestAddr = GuestAddr::new(0x181AC0);
+const MR_SEND_ADDR: GuestAddr = GuestAddr::new(0x181B00);
+const MR_RECVFROM_ADDR: GuestAddr = GuestAddr::new(0x181B40);
+const MR_SENDTO_ADDR: GuestAddr = GuestAddr::new(0x181B80);
+const MR_START_SHAKE_ADDR: GuestAddr = GuestAddr::new(0x1815C0);
+const MR_STOP_SHAKE_ADDR: GuestAddr = GuestAddr::new(0x181600);
+const MR_PLAY_SOUND_ADDR: GuestAddr = GuestAddr::new(0x181640);
+const MR_STOP_SOUND_ADDR: GuestAddr = GuestAddr::new(0x181680);
+const MR_DIALOG_CREATE_ADDR: GuestAddr = GuestAddr::new(0x1816C0);
+const MR_DIALOG_RELEASE_ADDR: GuestAddr = GuestAddr::new(0x181700);
+const MR_DIALOG_REFRESH_ADDR: GuestAddr = GuestAddr::new(0x181740);
+const MR_TEXT_CREATE_ADDR: GuestAddr = GuestAddr::new(0x181780);
+const MR_TEXT_RELEASE_ADDR: GuestAddr = GuestAddr::new(0x1817C0);
+const MR_TEXT_REFRESH_ADDR: GuestAddr = GuestAddr::new(0x181800);
+const MR_EDIT_CREATE_ADDR: GuestAddr = GuestAddr::new(0x181840);
+const MR_EDIT_RELEASE_ADDR: GuestAddr = GuestAddr::new(0x181880);
+const MR_EDIT_GET_TEXT_ADDR: GuestAddr = GuestAddr::new(0x1818C0);
 const MR_SCREEN_BUF_OFFSET: u32 = 0x16C;
 const MR_SCREEN_W_OFFSET: u32 = 0x170;
 const MR_SCREEN_H_OFFSET: u32 = 0x174;
@@ -180,6 +230,12 @@ struct MemoryManagerSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PluginExtLoad {
+    code_base: GuestAddr,
+    context_addr: GuestAddr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExtBootstrap {
     pub mr_table_addr: GuestAddr,
     pub mr_c_function_new_addr: GuestAddr,
@@ -209,7 +265,7 @@ impl ExtBootstrap {
         // rewritten below to guest-visible cell pointers.
         for offset in (0..=0x240u32).step_by(4) {
             let slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(offset));
-            memory.write32(slot, self.mr_free_addr.get())?;
+            memory.write32(slot, RET_ZERO_STUB_ADDR.get())?;
         }
 
         let mr_malloc_slot =
@@ -266,6 +322,35 @@ impl ExtBootstrap {
         let read_file_slot =
             GuestAddr::new(self.mr_table_addr.get().wrapping_add(MR_READ_FILE_OFFSET));
         memory.write32(read_file_slot, MR_READ_FILE_ADDR.get())?;
+        for (offset, addr) in [
+            (MR_GET_HOST_BY_NAME_OFFSET, MR_GET_HOST_BY_NAME_ADDR),
+            (MR_INIT_NETWORK_OFFSET, MR_INIT_NETWORK_ADDR),
+            (MR_CLOSE_NETWORK_OFFSET, MR_CLOSE_NETWORK_ADDR),
+            (MR_SOCKET_OFFSET, MR_SOCKET_ADDR),
+            (MR_CONNECT_OFFSET, MR_CONNECT_ADDR),
+            (MR_GET_SOCKET_STATE_OFFSET, MR_GET_SOCKET_STATE_ADDR),
+            (MR_CLOSE_SOCKET_OFFSET, MR_CLOSE_SOCKET_ADDR),
+            (MR_RECV_OFFSET, MR_RECV_ADDR),
+            (MR_SEND_OFFSET, MR_SEND_ADDR),
+            (MR_RECVFROM_OFFSET, MR_RECVFROM_ADDR),
+            (MR_SENDTO_OFFSET, MR_SENDTO_ADDR),
+            (MR_START_SHAKE_OFFSET, MR_START_SHAKE_ADDR),
+            (MR_STOP_SHAKE_OFFSET, MR_STOP_SHAKE_ADDR),
+            (MR_PLAY_SOUND_OFFSET, MR_PLAY_SOUND_ADDR),
+            (MR_STOP_SOUND_OFFSET, MR_STOP_SOUND_ADDR),
+            (MR_DIALOG_CREATE_OFFSET, MR_DIALOG_CREATE_ADDR),
+            (MR_DIALOG_RELEASE_OFFSET, MR_DIALOG_RELEASE_ADDR),
+            (MR_DIALOG_REFRESH_OFFSET, MR_DIALOG_REFRESH_ADDR),
+            (MR_TEXT_CREATE_OFFSET, MR_TEXT_CREATE_ADDR),
+            (MR_TEXT_RELEASE_OFFSET, MR_TEXT_RELEASE_ADDR),
+            (MR_TEXT_REFRESH_OFFSET, MR_TEXT_REFRESH_ADDR),
+            (MR_EDIT_CREATE_OFFSET, MR_EDIT_CREATE_ADDR),
+            (MR_EDIT_RELEASE_OFFSET, MR_EDIT_RELEASE_ADDR),
+            (MR_EDIT_GET_TEXT_OFFSET, MR_EDIT_GET_TEXT_ADDR),
+        ] {
+            let slot = GuestAddr::new(self.mr_table_addr.get().wrapping_add(offset));
+            memory.write32(slot, addr.get())?;
+        }
 
         let c_function_new_slot = GuestAddr::new(
             self.mr_table_addr
@@ -275,7 +360,7 @@ impl ExtBootstrap {
         memory.write32(c_function_new_slot, self.mr_c_function_new_addr.get())?;
 
         seed_memory_manager_cells(memory, self.mr_table_addr, MemoryManagerSnapshot::initial())?;
-        seed_internal_runtime_tables(memory, self.mr_table_addr, self.mr_free_addr)?;
+        seed_internal_runtime_tables(memory, self.mr_table_addr, RET_ZERO_STUB_ADDR)?;
         seed_legacy_runtime_data(memory, self.mr_table_addr)?;
 
         // Host callback stubs. Actual behavior is implemented in ExtHost::handle.
@@ -323,6 +408,31 @@ impl ExtBootstrap {
             STRTOUL_ADDR,
             MR_PRINTF_ADDR,
             SEND_APP_EVENT_ADDR,
+            RET_ZERO_STUB_ADDR,
+            MR_GET_HOST_BY_NAME_ADDR,
+            MR_INIT_NETWORK_ADDR,
+            MR_CLOSE_NETWORK_ADDR,
+            MR_SOCKET_ADDR,
+            MR_CONNECT_ADDR,
+            MR_GET_SOCKET_STATE_ADDR,
+            MR_CLOSE_SOCKET_ADDR,
+            MR_RECV_ADDR,
+            MR_SEND_ADDR,
+            MR_RECVFROM_ADDR,
+            MR_SENDTO_ADDR,
+            MR_START_SHAKE_ADDR,
+            MR_STOP_SHAKE_ADDR,
+            MR_PLAY_SOUND_ADDR,
+            MR_STOP_SOUND_ADDR,
+            MR_DIALOG_CREATE_ADDR,
+            MR_DIALOG_RELEASE_ADDR,
+            MR_DIALOG_REFRESH_ADDR,
+            MR_TEXT_CREATE_ADDR,
+            MR_TEXT_RELEASE_ADDR,
+            MR_TEXT_REFRESH_ADDR,
+            MR_EDIT_CREATE_ADDR,
+            MR_EDIT_RELEASE_ADDR,
+            MR_EDIT_GET_TEXT_ADDR,
         ] {
             memory.write32(addr, MOV_R0_IMM0)?;
             memory.write32(GuestAddr::new(addr.get().wrapping_add(4)), BX_LR)?;
@@ -462,9 +572,16 @@ pub struct ExtHost {
     next_file_handle: i32,
     dirs: BTreeMap<i32, HostDir>,
     next_dir_handle: i32,
+    edits: BTreeMap<i32, String>,
+    next_edit_handle: i32,
+    edit_text_ptr: u32,
+    network_ready: bool,
+    legacy_sockets: BTreeMap<i32, ()>,
+    next_socket_handle: i32,
     package_files: BTreeMap<String, Vec<u8>>,
     memory_manager_min_free: u32,
     memory_manager_peak_used: u32,
+    active_plugin_ext_load: Option<PluginExtLoad>,
 }
 
 impl ExtHost {
@@ -516,9 +633,16 @@ impl ExtHost {
             next_file_handle: 3,
             dirs: BTreeMap::new(),
             next_dir_handle: 1000,
+            edits: BTreeMap::new(),
+            next_edit_handle: 2000,
+            edit_text_ptr: 0,
+            network_ready: false,
+            legacy_sockets: BTreeMap::new(),
+            next_socket_handle: 3000,
             package_files: BTreeMap::new(),
             memory_manager_min_free: memory_manager_total_len(),
             memory_manager_peak_used: 0,
+            active_plugin_ext_load: None,
         }
     }
 
@@ -532,6 +656,17 @@ impl ExtHost {
 
     pub fn set_mr_table_addr(&mut self, addr: GuestAddr) {
         self.mr_table_addr = addr;
+    }
+
+    pub fn begin_plugin_ext_load(&mut self, code_base: GuestAddr, context_addr: GuestAddr) {
+        self.active_plugin_ext_load = Some(PluginExtLoad {
+            code_base,
+            context_addr,
+        });
+    }
+
+    pub fn clear_plugin_ext_load(&mut self) {
+        self.active_plugin_ext_load = None;
     }
 
     pub fn reset_alloc<B: MemoryBus>(&mut self, memory: &mut B) -> Result<(), MemoryAccessError> {
@@ -670,6 +805,10 @@ impl ExtHost {
             self.handle_mr_c_function_new(cpu)?;
             return Ok(true);
         }
+        if pc == MR_EXT_FUNCTION_NEW_ADDR.get() {
+            self.handle_plugin_ext_function_new(cpu)?;
+            return Ok(true);
+        }
 
         if pc == self.mr_malloc_addr.get() {
             self.handle_mr_malloc(cpu)?;
@@ -781,6 +920,106 @@ impl ExtHost {
             return Ok(true);
         }
 
+        if pc == RET_ZERO_STUB_ADDR.get() {
+            cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+            return_to_lr(cpu);
+            return Ok(true);
+        }
+
+        if pc == MR_GET_HOST_BY_NAME_ADDR.get() {
+            self.handle_legacy_get_host_by_name(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_INIT_NETWORK_ADDR.get() {
+            self.handle_legacy_init_network(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_CLOSE_NETWORK_ADDR.get() {
+            self.handle_legacy_close_network(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_SOCKET_ADDR.get() {
+            self.handle_legacy_socket(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_CONNECT_ADDR.get() {
+            self.handle_legacy_connect(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_GET_SOCKET_STATE_ADDR.get() {
+            self.handle_legacy_get_socket_state(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_CLOSE_SOCKET_ADDR.get() {
+            self.handle_legacy_close_socket(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_RECV_ADDR.get() {
+            self.handle_legacy_recv(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_SEND_ADDR.get() {
+            self.handle_legacy_send(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_RECVFROM_ADDR.get() {
+            self.handle_legacy_recvfrom(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_SENDTO_ADDR.get() {
+            self.handle_legacy_sendto(cpu)?;
+            return Ok(true);
+        }
+
+        if matches!(
+            pc,
+            value if value == MR_START_SHAKE_ADDR.get()
+                || value == MR_STOP_SHAKE_ADDR.get()
+                || value == MR_PLAY_SOUND_ADDR.get()
+                || value == MR_STOP_SOUND_ADDR.get()
+        ) {
+            self.handle_legacy_success_stub(cpu)?;
+            return Ok(true);
+        }
+
+        if matches!(
+            pc,
+            value if value == MR_DIALOG_CREATE_ADDR.get()
+                || value == MR_DIALOG_RELEASE_ADDR.get()
+                || value == MR_DIALOG_REFRESH_ADDR.get()
+                || value == MR_TEXT_CREATE_ADDR.get()
+                || value == MR_TEXT_RELEASE_ADDR.get()
+                || value == MR_TEXT_REFRESH_ADDR.get()
+        ) {
+            self.handle_legacy_failed_stub(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_EDIT_CREATE_ADDR.get() {
+            self.handle_edit_create(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_EDIT_RELEASE_ADDR.get() {
+            self.handle_edit_release(cpu)?;
+            return Ok(true);
+        }
+
+        if pc == MR_EDIT_GET_TEXT_ADDR.get() {
+            self.handle_edit_get_text(cpu)?;
+            return Ok(true);
+        }
+
         if pc == MR_GET_SCREEN_INFO_ADDR.get() {
             self.handle_mr_get_screen_info(cpu)?;
             return Ok(true);
@@ -832,6 +1071,239 @@ impl ExtHost {
         Ok(())
     }
 
+    fn handle_legacy_success_stub<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_failed_stub<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        cpu.regs_mut().set_reg(0, MR_FAILED as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_edit_create<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let text_addr = cpu.regs().reg(1);
+        let text = if text_addr == 0 {
+            String::new()
+        } else {
+            read_guest_c_string(cpu, text_addr, 4096)?
+        };
+        let handle = self.next_edit_handle;
+        self.next_edit_handle = self.next_edit_handle.saturating_add(1);
+        self.edits.insert(handle, text);
+        cpu.regs_mut().set_reg(0, handle as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_edit_release<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        self.edits.remove(&handle);
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_edit_get_text<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let text = self.edits.get(&handle).cloned().unwrap_or_default();
+        if self.edit_text_ptr != 0 {
+            self.free_ext(self.edit_text_ptr);
+            self.edit_text_ptr = 0;
+        }
+
+        let ptr = self
+            .alloc_ext(cpu.memory_mut(), text.len().max(1) as u32 + 1)?
+            .unwrap_or(0);
+        if ptr != 0 {
+            write_guest_c_string(cpu, ptr, &text)?;
+        }
+        self.edit_text_ptr = ptr;
+        self.sync_memory_manager_cells(cpu.memory_mut())?;
+        cpu.regs_mut().set_reg(0, ptr);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_get_host_by_name<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let name_addr = cpu.regs().reg(0);
+        let ret = if name_addr == 0 {
+            MR_FAILED
+        } else {
+            let name = read_guest_c_string(cpu, name_addr, 1024)?;
+            if name.trim().is_empty() {
+                MR_FAILED
+            } else {
+                0x7F00_0001u32 as i32
+            }
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_init_network<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        self.network_ready = true;
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_close_network<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        self.network_ready = false;
+        self.legacy_sockets.clear();
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_socket<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        if !self.network_ready {
+            cpu.regs_mut().set_reg(0, MR_FAILED as u32);
+        } else {
+            let handle = self.next_socket_handle;
+            self.next_socket_handle = self.next_socket_handle.saturating_add(1);
+            self.legacy_sockets.insert(handle, ());
+            cpu.regs_mut().set_reg(0, handle as u32);
+        }
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_connect<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            MR_SUCCESS
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_get_socket_state<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            MR_SUCCESS
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_close_socket<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.legacy_sockets.remove(&handle).is_some() {
+            MR_SUCCESS
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_recv<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            0
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_send<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            cpu.regs().reg(2) as i32
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_recvfrom<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            0
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_legacy_sendto<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let handle = cpu.regs().reg(0) as i32;
+        let ret = if self.network_ready && self.legacy_sockets.contains_key(&handle) {
+            cpu.regs().reg(2) as i32
+        } else {
+            MR_FAILED
+        };
+        cpu.regs_mut().set_reg(0, ret as u32);
+        return_to_lr(cpu);
+        Ok(())
+    }
+
     fn handle_mr_c_function_new<B: MemoryBus>(
         &mut self,
         cpu: &mut Cpu<B>,
@@ -865,6 +1337,24 @@ impl ExtHost {
 
         cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
         self.sync_memory_manager_cells(cpu.memory_mut())?;
+        return_to_lr(cpu);
+        Ok(())
+    }
+
+    fn handle_plugin_ext_function_new<B: MemoryBus>(
+        &mut self,
+        cpu: &mut Cpu<B>,
+    ) -> Result<(), MemoryAccessError> {
+        let Some(load) = self.active_plugin_ext_load else {
+            cpu.regs_mut().set_reg(0, u32::MAX);
+            return_to_lr(cpu);
+            return Ok(());
+        };
+        cpu.memory_mut().write32(
+            GuestAddr::new(load.code_base.get().wrapping_add(4)),
+            load.context_addr.get(),
+        )?;
+        cpu.regs_mut().set_reg(0, MR_SUCCESS as u32);
         return_to_lr(cpu);
         Ok(())
     }
@@ -1226,7 +1716,9 @@ impl ExtHost {
     ) -> Result<(), MemoryAccessError> {
         let input0 = cpu.regs().reg(1) as i32;
         let input1 = cpu.regs().reg(2);
-        println!("[host-testcom] code={} input1=0x{:X}", input0, input1);
+        if self.verbose {
+            println!("[host-testcom] code={} input1=0x{:X}", input0, input1);
+        }
         let ret = match input0 {
             1 => self
                 .uptime_epoch
@@ -1320,12 +1812,14 @@ impl ExtHost {
         cpu: &mut Cpu<B>,
     ) -> Result<(), MemoryAccessError> {
         let input0 = cpu.regs().reg(1) as i32;
-        println!(
-            "[host-testcom1] code={} input1=0x{:X} len=0x{:X}",
-            input0,
-            cpu.regs().reg(2),
-            cpu.regs().reg(3)
-        );
+        if self.verbose {
+            println!(
+                "[host-testcom1] code={} input1=0x{:X} len=0x{:X}",
+                input0,
+                cpu.regs().reg(2),
+                cpu.regs().reg(3)
+            );
+        }
         let input1 = cpu.regs().reg(2);
         let len = cpu.regs().reg(3);
 
@@ -1405,6 +1899,12 @@ impl ExtHost {
         } else {
             0
         };
+        if self.verbose {
+            println!(
+                "[mr-read-file] name={} ptr=0x{:X} len_ptr=0x{:X}",
+                name, ptr, filelen_ptr
+            );
+        }
         cpu.regs_mut().set_reg(0, ptr);
         self.sync_memory_manager_cells(cpu.memory_mut())?;
         return_to_lr(cpu);
@@ -1743,6 +2243,12 @@ impl ExtHost {
                     }
                     Err(_) => MR_FAILED,
                 };
+                if self.verbose {
+                    println!(
+                        "[dsm-open] name={} mode=0x{:X} ret={}",
+                        name, mode, ret
+                    );
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }
@@ -1753,6 +2259,9 @@ impl ExtHost {
                 } else {
                     MR_FAILED
                 };
+                if self.verbose {
+                    println!("[dsm-close] fd={} ret={}", fd, ret);
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }
@@ -1780,6 +2289,9 @@ impl ExtHost {
                     }
                 }
 
+                if self.verbose {
+                    println!("[dsm-read] fd={} len={} ret={}", fd, len, ret);
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }
@@ -1827,6 +2339,12 @@ impl ExtHost {
                     }
                 }
 
+                if self.verbose {
+                    println!(
+                        "[dsm-seek] fd={} pos={} method={} ret={}",
+                        fd, pos, method, ret
+                    );
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }
@@ -1840,6 +2358,9 @@ impl ExtHost {
                     Ok(_) => MR_IS_INVALID,
                     Err(_) => MR_IS_INVALID,
                 };
+                if self.verbose {
+                    println!("[dsm-info] name={} ret={}", name, ret);
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }
@@ -1978,6 +2499,9 @@ impl ExtHost {
                     Ok(meta) if meta.is_file() => i32::try_from(meta.len()).unwrap_or(MR_FAILED),
                     _ => MR_FAILED,
                 };
+                if self.verbose {
+                    println!("[dsm-getlen] name={} ret={}", name, ret);
+                }
                 cpu.regs_mut().set_reg(0, ret as u32);
                 return_to_lr(cpu);
             }

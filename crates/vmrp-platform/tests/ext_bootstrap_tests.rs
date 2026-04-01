@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use vmrp_abi::ExtFile;
 use vmrp_core::{GuestAddr, DEFAULT_LAYOUT};
 use vmrp_cpu::{Cpu, ExecutionMode, MemoryBus, TestMemory};
-use vmrp_platform::{ExtBootstrap, ExtHost, HostTimerCommand, SEND_APP_EVENT_ADDR};
+use vmrp_platform::{
+    ExtBootstrap, ExtHost, HostTimerCommand, MR_EXT_FUNCTION_NEW_ADDR, SEND_APP_EVENT_ADDR,
+};
 
 fn real_ext_path() -> PathBuf {
     PathBuf::from(r"D:\opt\rust\vmrp\mrc\asm\cfunction.ext")
@@ -75,6 +77,17 @@ fn read_c_string(memory: &TestMemory, addr: u32) -> String {
         cursor = cursor.wrapping_add(1);
     }
     String::from_utf8(bytes).unwrap()
+}
+
+fn write_c_string(memory: &mut TestMemory, addr: u32, value: &str) {
+    for (index, byte) in value.as_bytes().iter().enumerate() {
+        memory
+            .write8(GuestAddr::new(addr.wrapping_add(index as u32)), *byte)
+            .unwrap();
+    }
+    memory
+        .write8(GuestAddr::new(addr.wrapping_add(value.len() as u32)), 0)
+        .unwrap();
 }
 
 #[test]
@@ -197,6 +210,55 @@ fn bootstrap_maps_internal_and_port_tables_to_guest_data() {
     assert_eq!(memory.read32(GuestAddr::new(timer_state_cell)).unwrap(), 0);
     assert_eq!(memory.read32(GuestAddr::new(timer_run_cell)).unwrap(), 0);
     assert_eq!(memory.read32(GuestAddr::new(port_table)).unwrap(), 0);
+}
+
+#[test]
+fn bootstrap_does_not_point_unimplemented_slots_at_mr_free() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+
+    let internal_table = memory.read32(GuestAddr::new(0x18005C)).unwrap();
+    let unresolved_internal = memory
+        .read32(GuestAddr::new(internal_table.wrapping_add(12 * 4)))
+        .unwrap();
+    let unresolved_mr_table = memory.read32(GuestAddr::new(0x180124)).unwrap();
+
+    assert_ne!(unresolved_internal, 0x181140);
+    assert_ne!(unresolved_mr_table, 0x181140);
+}
+
+#[test]
+fn bootstrap_maps_legacy_ui_and_sound_slots_to_host_stubs() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+
+    assert_eq!(memory.read32(GuestAddr::new(0x180098)).unwrap(), 0x1815C0);
+    assert_eq!(memory.read32(GuestAddr::new(0x18009C)).unwrap(), 0x181600);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800A0)).unwrap(), 0x181640);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800A4)).unwrap(), 0x181680);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800A8)).unwrap(), 0x1816C0);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800BC)).unwrap(), 0x181800);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800C0)).unwrap(), 0x181840);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800C4)).unwrap(), 0x181880);
+    assert_eq!(memory.read32(GuestAddr::new(0x1800C8)).unwrap(), 0x1818C0);
+}
+
+#[test]
+fn bootstrap_maps_legacy_network_slots_to_host_stubs() {
+    let (cpu, _host) = new_bootstrapped_real_ext_cpu();
+    let memory = cpu.memory();
+
+    assert_eq!(memory.read32(GuestAddr::new(0x18006C)).unwrap(), 0x181900);
+    assert_eq!(memory.read32(GuestAddr::new(0x180070)).unwrap(), 0x181940);
+    assert_eq!(memory.read32(GuestAddr::new(0x180074)).unwrap(), 0x181980);
+    assert_eq!(memory.read32(GuestAddr::new(0x180078)).unwrap(), 0x1819C0);
+    assert_eq!(memory.read32(GuestAddr::new(0x18007C)).unwrap(), 0x181A00);
+    assert_eq!(memory.read32(GuestAddr::new(0x180080)).unwrap(), 0x181A40);
+    assert_eq!(memory.read32(GuestAddr::new(0x180084)).unwrap(), 0x181A80);
+    assert_eq!(memory.read32(GuestAddr::new(0x180088)).unwrap(), 0x181AC0);
+    assert_eq!(memory.read32(GuestAddr::new(0x18008C)).unwrap(), 0x181B00);
+    assert_eq!(memory.read32(GuestAddr::new(0x180090)).unwrap(), 0x181B40);
+    assert_eq!(memory.read32(GuestAddr::new(0x180094)).unwrap(), 0x181B80);
 }
 
 #[test]
@@ -393,7 +455,7 @@ fn bootstrap_keeps_safe_stub_for_other_unresolved_function_slots() {
 
     assert_eq!(
         cpu.memory().read32(GuestAddr::new(0x180144)).unwrap(),
-        0x181140
+        0x181580
     );
 }
 
@@ -939,4 +1001,156 @@ fn host_send_app_event_stub_emits_timer_commands() {
     assert_eq!(cpu.regs().pc(), 0x80044);
     assert_eq!(cpu.regs().reg(0), 0);
     assert_eq!(host.take_timer_command(), Some(HostTimerCommand::Stop));
+}
+
+#[test]
+fn host_ext_function_new_stub_targets_active_plugin_context() {
+    let memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let code_base = GuestAddr::new(0x190000);
+    let plugin_context = GuestAddr::new(0x280400);
+
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+    host.begin_plugin_ext_load(code_base, plugin_context);
+
+    let mut cpu = Cpu::new(memory);
+    cpu.regs_mut().set_pc(MR_EXT_FUNCTION_NEW_ADDR.get());
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+    cpu.regs_mut().set_lr(0x80044);
+    cpu.regs_mut().set_reg(0, 0x191234);
+    cpu.regs_mut().set_reg(1, 0x14);
+
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().pc(), 0x80044);
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(
+        cpu.memory().read32(GuestAddr::new(code_base.get().wrapping_add(4))).unwrap(),
+        plugin_context.get()
+    );
+    assert_eq!(host.c_function_p_addr().get(), 0x182000);
+}
+
+#[test]
+fn host_handles_legacy_ui_and_sound_stubs() {
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+
+    write_c_string(&mut memory, 0x183200, "seed");
+    let mut cpu = Cpu::new(memory);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+
+    for pc in [0x1815C0, 0x181600, 0x181640, 0x181680] {
+        cpu.regs_mut().set_pc(pc);
+        cpu.regs_mut().set_lr(0x80040);
+        cpu.regs_mut().set_reg(0, 1);
+        cpu.regs_mut().set_reg(1, 0x183200);
+        cpu.regs_mut().set_reg(2, 4);
+        cpu.regs_mut().set_reg(3, 0);
+        assert!(host.handle(&mut cpu).unwrap());
+        assert_eq!(cpu.regs().reg(0), 0);
+        assert_eq!(cpu.regs().pc(), 0x80040);
+    }
+
+    for pc in [0x1816C0, 0x181700, 0x181740, 0x181780, 0x1817C0, 0x181800] {
+        cpu.regs_mut().set_pc(pc);
+        cpu.regs_mut().set_lr(0x80044);
+        cpu.regs_mut().set_reg(0, 0x183200);
+        cpu.regs_mut().set_reg(1, 0x183200);
+        cpu.regs_mut().set_reg(2, 0);
+        cpu.regs_mut().set_reg(3, 0);
+        assert!(host.handle(&mut cpu).unwrap());
+        assert_eq!(cpu.regs().reg(0) as i32, -1);
+        assert_eq!(cpu.regs().pc(), 0x80044);
+    }
+
+    cpu.regs_mut().set_pc(0x181840);
+    cpu.regs_mut().set_lr(0x80048);
+    cpu.regs_mut().set_reg(0, 0x183200);
+    cpu.regs_mut().set_reg(1, 0x183200);
+    cpu.regs_mut().set_reg(2, 0);
+    cpu.regs_mut().set_reg(3, 16);
+    assert!(host.handle(&mut cpu).unwrap());
+    let edit = cpu.regs().reg(0) as i32;
+    assert!(edit > 0);
+    assert_eq!(cpu.regs().pc(), 0x80048);
+
+    cpu.regs_mut().set_pc(0x1818C0);
+    cpu.regs_mut().set_lr(0x8004C);
+    cpu.regs_mut().set_reg(0, edit as u32);
+    assert!(host.handle(&mut cpu).unwrap());
+    let text_ptr = cpu.regs().reg(0);
+    assert_ne!(text_ptr, 0);
+    assert_eq!(read_c_string(cpu.memory(), text_ptr), "seed");
+    assert_eq!(cpu.regs().pc(), 0x8004C);
+
+    cpu.regs_mut().set_pc(0x181880);
+    cpu.regs_mut().set_lr(0x80050);
+    cpu.regs_mut().set_reg(0, edit as u32);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+    assert_eq!(cpu.regs().pc(), 0x80050);
+}
+
+#[test]
+fn host_handles_legacy_network_stubs() {
+    let mut memory = TestMemory::with_ram(DEFAULT_LAYOUT.code_address(), 0x900000);
+    let mut host = ExtHost::new(
+        GuestAddr::new(0x181000),
+        GuestAddr::new(0x182000),
+        GuestAddr::new(0x181100),
+        GuestAddr::new(0x181140),
+        GuestAddr::new(0x181180),
+        GuestAddr::new(0x181200),
+        GuestAddr::new(0x181300),
+        GuestAddr::new(0x183000),
+        0x10000,
+    );
+    write_c_string(&mut memory, 0x183200, "example.com");
+
+    let mut cpu = Cpu::new(memory);
+    cpu.regs_mut().set_execution_mode(ExecutionMode::Arm);
+
+    cpu.regs_mut().set_pc(0x181940);
+    cpu.regs_mut().set_lr(0x80054);
+    cpu.regs_mut().set_reg(0, 0);
+    cpu.regs_mut().set_reg(1, 0);
+    cpu.regs_mut().set_reg(2, 0);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    cpu.regs_mut().set_pc(0x181980);
+    cpu.regs_mut().set_lr(0x80058);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0), 0);
+
+    cpu.regs_mut().set_pc(0x181B80);
+    cpu.regs_mut().set_lr(0x8005C);
+    cpu.regs_mut().set_reg(0, 0);
+    cpu.regs_mut().set_reg(1, 0x183200);
+    cpu.regs_mut().set_reg(2, 11);
+    cpu.regs_mut().set_reg(3, 0x7F000001);
+    cpu.memory_mut().write32(GuestAddr::new(0x280000), 80).unwrap();
+    cpu.regs_mut().set_sp(0x280000);
+    assert!(host.handle(&mut cpu).unwrap());
+    assert_eq!(cpu.regs().reg(0) as i32, -1);
+    assert_eq!(cpu.regs().pc(), 0x8005C);
 }
